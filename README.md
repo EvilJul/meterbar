@@ -118,4 +118,4 @@ npm run tauri build
 
 ## License
 
-仓库尚无 `LICENSE` 文件。许可状态为 **TBD**。请勿仅凭本 README 假定为 MIT 或其他 OSI 许可。
+本项目采用 [MIT](LICENSE) 开源协议。
