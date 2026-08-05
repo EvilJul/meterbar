@@ -260,8 +260,18 @@ fn dashboard_ts_to_iso(v: &Value) -> Option<String> {
     }
 }
 
+fn dashboard_looks_unauthenticated(status: reqwest::StatusCode, body: &str) -> bool {
+    if status.as_u16() == 401 {
+        return true;
+    }
+    let lower = body.to_lowercase();
+    lower.contains("not_authenticated")
+        || lower.contains("\"unauthenticated\"")
+        || (lower.contains("unauthenticated") && !status.is_success())
+}
+
 fn try_map_dashboard(outcome: HttpOutcome) -> Option<UsageSnapshot> {
-    if outcome.status.as_u16() == 401 {
+    if dashboard_looks_unauthenticated(outcome.status, &outcome.body) {
         return Some(snapshot_base(
             ProviderStatus::NeedsAuth,
             Some("会话已失效".to_string()),
@@ -328,45 +338,95 @@ fn try_map_dashboard(outcome: HttpOutcome) -> Option<UsageSnapshot> {
     })
 }
 
-async fn fetch_with_bearer(client: &reqwest::Client, token: &str) -> Option<UsageSnapshot> {
-    // 实测：本机 accessToken 对 cursor.com/api/usage-summary 常返回 401，
-    // 但对 Dashboard GetCurrentPeriodUsage 可用；故先打 Dashboard，避免被 401 短路。
-    let mut saw_needs_auth = false;
-
-    if let Ok(outcome) = http_post_json(client, GET_CURRENT_PERIOD_USAGE_URL, token, "{}").await {
-        match try_map_dashboard(outcome) {
-            Some(snap) if snap.status == ProviderStatus::Ok => return Some(snap),
-            Some(snap) if snap.status == ProviderStatus::NeedsAuth => {
-                saw_needs_auth = true;
-            }
-            Some(snap) => return Some(snap),
-            None => {}
-        }
+/// Bearer 诊断日志：仅记录 endpoint / HTTP status / 分支名，绝不含 token。
+fn log_bearer_branch(endpoint: &str, http_status: Option<u16>, branch: &str) {
+    match http_status {
+        Some(status) => eprintln!(
+            "[usages] cursor bearer endpoint={endpoint} http_status={status} branch={branch}"
+        ),
+        None => eprintln!("[usages] cursor bearer endpoint={endpoint} branch={branch}"),
     }
+}
+
+fn dashboard_transient_snapshot(http_status: Option<u16>) -> UsageSnapshot {
+    let message = match http_status {
+        Some(status) => format!("Dashboard 瞬时失败（HTTP {status}）"),
+        None => "Dashboard 瞬时失败（网络错误）".to_string(),
+    };
+    snapshot_base(ProviderStatus::NetworkError, Some(message))
+}
+
+async fn fetch_with_bearer(client: &reqwest::Client, token: &str) -> Option<UsageSnapshot> {
+    // 主路径：Dashboard。仅 Dashboard 自身 401/unauth → NeedsAuth。
+    // usage-summary 对本机 token 常 401，视为端点不支持，不得升格 needs_auth。
+    let dashboard_transient: Option<UsageSnapshot> =
+        match http_post_json(client, GET_CURRENT_PERIOD_USAGE_URL, token, "{}").await {
+            Ok(outcome) => {
+                let status_code = outcome.status.as_u16();
+                match try_map_dashboard(outcome) {
+                    Some(snap) if snap.status == ProviderStatus::Ok => {
+                        log_bearer_branch("dashboard", Some(status_code), "dashboard_ok");
+                        return Some(snap);
+                    }
+                    Some(snap) if snap.status == ProviderStatus::NeedsAuth => {
+                        log_bearer_branch("dashboard", Some(status_code), "dashboard_needs_auth");
+                        return Some(snap);
+                    }
+                    Some(snap) => {
+                        log_bearer_branch("dashboard", Some(status_code), "dashboard_transient");
+                        Some(snap)
+                    }
+                    None => {
+                        log_bearer_branch("dashboard", Some(status_code), "dashboard_transient");
+                        Some(dashboard_transient_snapshot(Some(status_code)))
+                    }
+                }
+            }
+            Err(snap) => {
+                log_bearer_branch("dashboard", None, "dashboard_transient");
+                Some(snap)
+            }
+        };
 
     for url in [USAGE_SUMMARY_CURSOR_URL, USAGE_SUMMARY_API2_URL] {
-        if let Ok(outcome) = http_get(client, url, AuthMode::Bearer(token)).await {
-            if let Some(snap) = try_map_usage_summary(outcome) {
-                if snap.status == ProviderStatus::Ok {
-                    return Some(snap);
+        let endpoint = if url.contains("api2") {
+            "usage_summary_api2"
+        } else {
+            "usage_summary_cursor"
+        };
+        match http_get(client, url, AuthMode::Bearer(token)).await {
+            Ok(outcome) => {
+                let status_code = outcome.status.as_u16();
+                match try_map_usage_summary(outcome) {
+                    Some(snap) if snap.status == ProviderStatus::Ok => {
+                        log_bearer_branch(endpoint, Some(status_code), "usage_summary_ok");
+                        return Some(snap);
+                    }
+                    Some(snap) if snap.status == ProviderStatus::NeedsAuth => {
+                        // 本机 token 常不被 usage-summary 接受；不置 saw_needs_auth。
+                        log_bearer_branch(
+                            endpoint,
+                            Some(status_code),
+                            "usage_summary_unsupported_token",
+                        );
+                        continue;
+                    }
+                    Some(snap) => {
+                        log_bearer_branch(endpoint, Some(status_code), "usage_summary_other");
+                        return Some(snap);
+                    }
+                    None => {
+                        log_bearer_branch(endpoint, Some(status_code), "usage_summary_unmapped");
+                    }
                 }
-                if snap.status == ProviderStatus::NeedsAuth {
-                    saw_needs_auth = true;
-                    continue;
-                }
-                return Some(snap);
+            }
+            Err(_) => {
+                log_bearer_branch(endpoint, None, "usage_summary_network_error");
             }
         }
     }
 
-    if saw_needs_auth {
-        return Some(snapshot_base(
-            ProviderStatus::NeedsAuth,
-            Some("会话已失效".to_string()),
-        ));
-    }
-
-    None
+    dashboard_transient
 }
 
 async fn fetch_with_cookie(client: &reqwest::Client, token: &str) -> UsageSnapshot {
@@ -443,17 +503,20 @@ pub async fn refresh() -> UsageSnapshot {
         Err(snap) => return snap,
     };
 
-    let session_probe = local_session::probe();
+    // 单次打开 DB，同时得到 probe 与 token，避免 WAL 下双重打开竞态。
+    let session = local_session::probe_and_read();
+    let session_probe = session.probe;
     let had_local_session = session_probe.token_len.is_some();
     let mut bearer_needs_auth = false;
     let mut bearer_other_error: Option<UsageSnapshot> = None;
 
     // 1. 本机 Cursor 登录态
     if had_local_session {
-        if let Some(access_token) = local_session::read_access_token() {
+        if let Some(access_token) = session.access_token {
             match fetch_with_bearer(&client, &access_token).await {
                 Some(snap) if snap.status == ProviderStatus::Ok => return snap,
                 Some(snap) if snap.status == ProviderStatus::NeedsAuth => {
+                    // 真 NeedsAuth：仍尝试 Cookie 兜底。
                     bearer_needs_auth = true;
                 }
                 Some(snap) => bearer_other_error = Some(snap),
@@ -631,6 +694,36 @@ mod tests {
         assert_eq!(snap.status, ProviderStatus::Ok);
         assert_eq!(snap.used, 7000.0);
         assert_eq!(snap.auto_percent_used, Some(45.7275));
+    }
+
+    #[test]
+    fn dashboard_401_is_needs_auth() {
+        let outcome = HttpOutcome {
+            status: reqwest::StatusCode::UNAUTHORIZED,
+            body: r#"{"error":"unauthenticated"}"#.to_string(),
+        };
+        let snap = try_map_dashboard(outcome).expect("应映射");
+        assert_eq!(snap.status, ProviderStatus::NeedsAuth);
+    }
+
+    #[test]
+    fn dashboard_429_is_unmapped_transient() {
+        let outcome = HttpOutcome {
+            status: reqwest::StatusCode::TOO_MANY_REQUESTS,
+            body: "rate limited".to_string(),
+        };
+        assert!(try_map_dashboard(outcome).is_none());
+        let transient = dashboard_transient_snapshot(Some(429));
+        assert_eq!(transient.status, ProviderStatus::NetworkError);
+        assert!(
+            transient
+                .message
+                .as_deref()
+                .unwrap_or("")
+                .contains("429"),
+            "message={}",
+            transient.message.unwrap_or_default()
+        );
     }
 
     #[test]

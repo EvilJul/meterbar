@@ -95,6 +95,8 @@ pub struct LatencySnapshot {
     pub fetched_at: String,
     /// 当前出口 IP 对应的城市/国家文案；查询失败时为 `None`。
     pub region_label: Option<String>,
+    /// 当前公网出口 IP；查询失败时为 `None`（与区域同源探测）。
+    pub egress_ip: Option<String>,
 }
 
 /// 面板聚合状态。
@@ -116,8 +118,42 @@ pub struct PanelState {
     pub has_deepseek_key: bool,
 }
 
-/// 应用设置（内存态；完整持久化留给后续任务）。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// 看板供应商显示三态。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ProviderVisibilityMode {
+    Auto,
+    Always,
+    Hidden,
+}
+
+impl Default for ProviderVisibilityMode {
+    fn default() -> Self {
+        Self::Auto
+    }
+}
+
+/// 各模型供应商的看板显示偏好（非密钥）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderVisibility {
+    pub cursor: ProviderVisibilityMode,
+    pub codex: ProviderVisibilityMode,
+    pub deepseek: ProviderVisibilityMode,
+}
+
+impl Default for ProviderVisibility {
+    fn default() -> Self {
+        Self {
+            cursor: ProviderVisibilityMode::Auto,
+            codex: ProviderVisibilityMode::Auto,
+            deepseek: ProviderVisibilityMode::Auto,
+        }
+    }
+}
+
+/// 应用设置（启动自磁盘加载；`update_settings` 成功后持久化）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppSettings {
     /// Cursor 用量自动刷新间隔（秒），默认 300，最小 60。
@@ -128,6 +164,12 @@ pub struct AppSettings {
     pub latency_target: String,
     /// 高延迟阈值（毫秒）；UI 标红（§6）使用此字段。
     pub high_latency_ms: u64,
+    /// 各模型供应商看板显示模式；默认全 `auto`。
+    pub provider_visibility: ProviderVisibility,
+    /// 模型供应商看板顺序；仅含 cursor/codex/deepseek。
+    pub provider_order: Vec<String>,
+    /// 是否显示 System + Latency；默认 true。
+    pub show_system_section: bool,
 }
 
 impl Default for AppSettings {
@@ -137,6 +179,9 @@ impl Default for AppSettings {
             system_refresh_sec: Self::DEFAULT_SYSTEM_REFRESH_SEC,
             latency_target: Self::DEFAULT_LATENCY_TARGET.to_string(),
             high_latency_ms: Self::DEFAULT_HIGH_LATENCY_MS,
+            provider_visibility: ProviderVisibility::default(),
+            provider_order: Self::default_provider_order(),
+            show_system_section: true,
         }
     }
 }
@@ -152,6 +197,15 @@ impl AppSettings {
     pub const DEFAULT_LATENCY_TARGET: &'static str = "https://cursor.com";
     pub const DEFAULT_HIGH_LATENCY_MS: u64 = 500;
     pub const MIN_HIGH_LATENCY_MS: u64 = 1;
+
+    pub const PROVIDER_IDS: [&'static str; 3] = ["cursor", "codex", "deepseek"];
+
+    pub fn default_provider_order() -> Vec<String> {
+        Self::PROVIDER_IDS
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect()
+    }
 
     pub fn clamp_cursor_refresh_sec(sec: u64) -> u64 {
         sec.max(Self::MIN_CURSOR_REFRESH_SEC)
@@ -176,6 +230,49 @@ impl AppSettings {
             format!("https://{trimmed}")
         }
     }
+
+    /// 非法 / 未知枚举回退为 `auto`。
+    pub fn parse_visibility_mode(raw: &str) -> ProviderVisibilityMode {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "always" => ProviderVisibilityMode::Always,
+            "hidden" => ProviderVisibilityMode::Hidden,
+            "auto" => ProviderVisibilityMode::Auto,
+            _ => ProviderVisibilityMode::Auto,
+        }
+    }
+
+    pub fn normalize_provider_visibility(vis: ProviderVisibility) -> ProviderVisibility {
+        // 已是枚举；经磁盘字符串解析后再走此路径时模式已合法。
+        vis
+    }
+
+    /// 过滤未知 id、去重（首现优先）、按默认相对顺序补齐缺失项。
+    pub fn normalize_provider_order(order: &[String]) -> Vec<String> {
+        let mut result: Vec<String> = Vec::with_capacity(Self::PROVIDER_IDS.len());
+        for id in order {
+            let normalized = id.trim().to_ascii_lowercase();
+            if Self::PROVIDER_IDS.contains(&normalized.as_str())
+                && !result.iter().any(|x| x == &normalized)
+            {
+                result.push(normalized);
+            }
+        }
+        for &id in &Self::PROVIDER_IDS {
+            if !result.iter().any(|x| x == id) {
+                result.push(id.to_string());
+            }
+        }
+        result
+    }
+
+    pub fn mode_for_provider(&self, provider: &str) -> ProviderVisibilityMode {
+        match provider {
+            "cursor" => self.provider_visibility.cursor,
+            "codex" => self.provider_visibility.codex,
+            "deepseek" => self.provider_visibility.deepseek,
+            _ => ProviderVisibilityMode::Auto,
+        }
+    }
 }
 
 /// 设置部分更新。
@@ -186,4 +283,7 @@ pub struct AppSettingsUpdate {
     pub system_refresh_sec: Option<u64>,
     pub latency_target: Option<String>,
     pub high_latency_ms: Option<u64>,
+    pub provider_visibility: Option<ProviderVisibility>,
+    pub provider_order: Option<Vec<String>>,
+    pub show_system_section: Option<bool>,
 }

@@ -26,12 +26,19 @@ static REGION_CACHE: Mutex<Option<RegionCache>> = Mutex::new(None);
 
 struct RegionCache {
     label: String,
+    ip: Option<String>,
     fetched_at: Instant,
+}
+
+struct RegionInfo {
+    label: String,
+    ip: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct IpWhoIsResponse {
     success: Option<bool>,
+    ip: Option<String>,
     city: Option<String>,
     region: Option<String>,
     country: Option<String>,
@@ -40,6 +47,7 @@ struct IpWhoIsResponse {
 
 #[derive(Debug, Deserialize)]
 struct IpInfoResponse {
+    ip: Option<String>,
     city: Option<String>,
     region: Option<String>,
     country: Option<String>,
@@ -64,6 +72,7 @@ pub async fn probe(target: &str) -> LatencySnapshot {
                 LatencyStatus::Error,
                 fetched_at,
                 Some(REGION_UNAVAILABLE.to_string()),
+                None,
             );
         }
     };
@@ -75,10 +84,10 @@ pub async fn probe(target: &str) -> LatencySnapshot {
         ProbeOutcome::Error => (None, LatencyStatus::Error),
     };
 
-    // 出口区域与延迟成败解耦：有缓存用缓存，否则始终尝试查询。
-    let region_label = probe_region(&client).await;
+    // 出口区域/IP 与延迟成败解耦：有缓存用缓存，否则始终尝试查询。
+    let (region_label, egress_ip) = probe_region(&client).await;
 
-    latency_snapshot(url, latency_ms, status, fetched_at, region_label)
+    latency_snapshot(url, latency_ms, status, fetched_at, region_label, egress_ip)
 }
 
 fn latency_snapshot(
@@ -87,6 +96,7 @@ fn latency_snapshot(
     status: LatencyStatus,
     fetched_at: String,
     region_label: Option<String>,
+    egress_ip: Option<String>,
 ) -> LatencySnapshot {
     LatencySnapshot {
         target,
@@ -94,6 +104,7 @@ fn latency_snapshot(
         status,
         fetched_at,
         region_label,
+        egress_ip,
     }
 }
 
@@ -122,26 +133,35 @@ fn map_result(result: Result<reqwest::Response, reqwest::Error>) -> ProbeOutcome
     }
 }
 
-/// 查询当前出口 IP 所在区域；失败返回短提示，成功结果缓存 5 分钟。
-async fn probe_region(client: &Client) -> Option<String> {
-    if let Some(label) = cached_region_label() {
-        return Some(label);
+/// 查询当前出口区域与公网 IP；失败时区域返回短提示、IP 为 `None`；成功结果缓存 5 分钟。
+async fn probe_region(client: &Client) -> (Option<String>, Option<String>) {
+    if let Some((label, ip)) = cached_region() {
+        return (Some(label), ip);
     }
 
-    if let Some(label) = fetch_region_ipwho(client).await {
-        store_region_cache(&label);
-        return Some(label);
+    if let Some(info) = fetch_region_ipwho(client).await {
+        store_region_cache(&info);
+        return (Some(info.label), info.ip);
     }
 
-    if let Some(label) = fetch_region_ipinfo(client).await {
-        store_region_cache(&label);
-        return Some(label);
+    if let Some(info) = fetch_region_ipinfo(client).await {
+        store_region_cache(&info);
+        return (Some(info.label), info.ip);
     }
 
-    Some(REGION_UNAVAILABLE.to_string())
+    (Some(REGION_UNAVAILABLE.to_string()), None)
 }
 
-async fn fetch_region_ipwho(client: &Client) -> Option<String> {
+fn normalize_ip(raw: Option<String>) -> Option<String> {
+    let ip = raw?.trim().to_string();
+    if ip.is_empty() {
+        None
+    } else {
+        Some(ip)
+    }
+}
+
+async fn fetch_region_ipwho(client: &Client) -> Option<RegionInfo> {
     let resp = match client.get(REGION_API_IPWHO).send().await {
         Ok(r) if r.status().is_success() => r,
         _ => return None,
@@ -157,14 +177,15 @@ async fn fetch_region_ipwho(client: &Client) -> Option<String> {
             .as_deref()
             .or(body.country_code.as_deref()),
     );
+    let ip = normalize_ip(body.ip);
     if label.is_empty() {
         None
     } else {
-        Some(label)
+        Some(RegionInfo { label, ip })
     }
 }
 
-async fn fetch_region_ipinfo(client: &Client) -> Option<String> {
+async fn fetch_region_ipinfo(client: &Client) -> Option<RegionInfo> {
     let resp = match client.get(REGION_API_IPINFO).send().await {
         Ok(r) if r.status().is_success() => r,
         _ => return None,
@@ -175,30 +196,33 @@ async fn fetch_region_ipinfo(client: &Client) -> Option<String> {
         body.region.as_deref(),
         body.country.as_deref(),
     );
+    let ip = normalize_ip(body.ip);
     if label.is_empty() {
         None
     } else {
-        Some(label)
+        Some(RegionInfo { label, ip })
     }
 }
 
-fn store_region_cache(label: &str) {
+fn store_region_cache(info: &RegionInfo) {
     if let Ok(mut guard) = REGION_CACHE.lock() {
         *guard = Some(RegionCache {
-            label: label.to_string(),
+            label: info.label.clone(),
+            ip: info.ip.clone(),
             fetched_at: Instant::now(),
         });
     }
 }
 
-fn cached_region_label() -> Option<String> {
+fn cached_region() -> Option<(String, Option<String>)> {
     let guard = REGION_CACHE.lock().ok()?;
     let cache = guard.as_ref()?;
-    if cache.fetched_at.elapsed() <= REGION_CACHE_TTL {
-        Some(cache.label.clone())
-    } else {
-        None
+    if cache.fetched_at.elapsed() > REGION_CACHE_TTL {
+        return None;
     }
+    // 旧缓存可能只有区域无 IP：视为失效，强制重新探测补全。
+    let ip = cache.ip.as_ref()?.clone();
+    Some((cache.label.clone(), Some(ip)))
 }
 
 fn compose_region_label(city: Option<&str>, region: Option<&str>, country: Option<&str>) -> String {
@@ -249,5 +273,33 @@ mod tests {
     #[test]
     fn compose_country_only() {
         assert_eq!(compose_region_label(None, None, Some("JP")), "JP");
+    }
+
+    #[test]
+    fn normalize_ip_trims_and_rejects_empty() {
+        assert_eq!(normalize_ip(Some(" 1.2.3.4 ".into())), Some("1.2.3.4".into()));
+        assert_eq!(normalize_ip(Some("   ".into())), None);
+        assert_eq!(normalize_ip(None), None);
+    }
+
+    #[test]
+    fn cache_without_ip_is_treated_as_miss() {
+        store_region_cache(&RegionInfo {
+            label: "Hong Kong, HK".into(),
+            ip: None,
+        });
+        assert!(cached_region().is_none());
+    }
+
+    #[test]
+    fn cache_with_ip_hits() {
+        store_region_cache(&RegionInfo {
+            label: "Hong Kong, HK".into(),
+            ip: Some("1.2.3.4".into()),
+        });
+        assert_eq!(
+            cached_region(),
+            Some(("Hong Kong, HK".into(), Some("1.2.3.4".into())))
+        );
     }
 }

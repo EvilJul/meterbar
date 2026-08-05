@@ -3,6 +3,7 @@ mod credentials;
 mod models;
 mod network;
 mod providers;
+mod settings;
 mod system;
 
 use commands::AppState;
@@ -214,6 +215,7 @@ pub fn run() {
             commands::set_deepseek_api_key,
             commands::clear_deepseek_api_key,
             commands::refresh_cursor,
+            commands::refresh_codex,
             commands::refresh_deepseek,
             commands::refresh_system,
             commands::refresh_latency,

@@ -1,6 +1,7 @@
 //! 用量 Provider 适配层。
 #![allow(dead_code)]
 
+pub mod codex;
 pub mod cursor;
 pub mod deepseek;
 

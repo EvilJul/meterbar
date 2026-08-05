@@ -10,7 +10,8 @@ use crate::models::{
     UsageSnapshot,
 };
 use crate::network;
-use crate::providers::{cursor, deepseek};
+use crate::providers::{codex, cursor, deepseek};
+use crate::settings;
 use crate::system;
 
 /// 进程内设置与最近快照缓存。
@@ -24,7 +25,7 @@ pub struct AppState {
 impl Default for AppState {
     fn default() -> Self {
         Self {
-            settings: Mutex::new(AppSettings::default()),
+            settings: Mutex::new(settings::load()),
             last_usages: Mutex::new(Vec::new()),
             last_system: Mutex::new(None),
             last_latency: Mutex::new(None),
@@ -59,6 +60,7 @@ fn placeholder_latency(target: &str) -> LatencySnapshot {
         status: LatencyStatus::Error,
         fetched_at: String::new(),
         region_label: None,
+        egress_ip: None,
     }
 }
 
@@ -176,6 +178,14 @@ pub async fn refresh_deepseek(state: State<'_, AppState>) -> Result<UsageSnapsho
     Ok(snap)
 }
 
+/// 经本机 Codex app-server 拉取 rate limits 快照（失败返回错误态，不拖垮其它卡）。
+#[tauri::command]
+pub async fn refresh_codex(state: State<'_, AppState>) -> Result<UsageSnapshot, String> {
+    let snap = codex::refresh().await;
+    store_usage(&state, &snap);
+    Ok(snap)
+}
+
 /// 独立采集本机系统指标；与 Cursor 失败解耦。
 #[tauri::command]
 pub fn refresh_system(state: State<'_, AppState>) -> SystemSnapshot {
@@ -211,7 +221,7 @@ pub fn get_settings(state: State<'_, AppState>) -> Result<AppSettings, String> {
         .map_err(|_| "读取设置失败".to_string())
 }
 
-/// 更新设置；各字段按约束钳位。
+/// 更新设置；各字段按约束钳位后写盘。写盘失败则严格回滚内存。
 #[tauri::command]
 pub fn update_settings(
     state: State<'_, AppState>,
@@ -221,19 +231,7 @@ pub fn update_settings(
         .settings
         .lock()
         .map_err(|_| "更新设置失败".to_string())?;
-    if let Some(sec) = patch.cursor_refresh_sec {
-        guard.cursor_refresh_sec = AppSettings::clamp_cursor_refresh_sec(sec);
-    }
-    if let Some(sec) = patch.system_refresh_sec {
-        guard.system_refresh_sec = AppSettings::clamp_system_refresh_sec(sec);
-    }
-    if let Some(target) = patch.latency_target {
-        guard.latency_target = AppSettings::normalize_latency_target(&target);
-    }
-    if let Some(ms) = patch.high_latency_ms {
-        guard.high_latency_ms = AppSettings::clamp_high_latency_ms(ms);
-    }
-    Ok(guard.clone())
+    settings::apply_update(&mut guard, patch)
 }
 
 /// 返回最近快照缓存 + 当前刷新间隔（不强制网络请求）。
@@ -248,7 +246,7 @@ pub fn diagnose_local_session() -> credentials::local_session::LocalSessionProbe
     credentials::local_session::probe()
 }
 
-/// 刷新 Cursor / DeepSeek / System / Latency 后返回聚合面板状态。
+/// 刷新 Cursor / Codex / DeepSeek / System / Latency 后返回聚合面板状态。
 #[tauri::command]
 pub async fn refresh_all(state: State<'_, AppState>) -> Result<PanelState, String> {
     let target = state
@@ -260,6 +258,10 @@ pub async fn refresh_all(state: State<'_, AppState>) -> Result<PanelState, Strin
     // 顺序刷新：各 provider 失败互不拖垮（各自返回错误态快照）。
     let cursor_snap = cursor::refresh().await;
     store_usage(&state, &cursor_snap);
+
+    // Codex best-effort：失败仅写入错误态快照，不影响后续 Cursor/System/Latency。
+    let codex_snap = codex::refresh().await;
+    store_usage(&state, &codex_snap);
 
     let deepseek_snap = deepseek::refresh().await;
     // 无 key 时不占卡片缓存（前端靠 has_deepseek_key 隐藏）；有 key 则始终更新。

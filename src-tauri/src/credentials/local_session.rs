@@ -134,23 +134,7 @@ fn open_readonly(path: &Path) -> Option<Connection> {
     None
 }
 
-fn token_len_from_db(path: &Path) -> Option<usize> {
-    let conn = open_readonly(path)?;
-    for key in ACCESS_TOKEN_KEYS {
-        let mut stmt = conn
-            .prepare("SELECT length(value) FROM ItemTable WHERE key = ?1 LIMIT 1")
-            .ok()?;
-        if let Ok(len) = stmt.query_row([key], |row| row.get::<_, i64>(0)) {
-            if len > 0 {
-                return Some(len as usize);
-            }
-        }
-    }
-    None
-}
-
-fn read_token_from_db(path: &Path) -> Option<String> {
-    let conn = open_readonly(path)?;
+fn read_token_from_conn(conn: &Connection) -> Option<String> {
     for key in ACCESS_TOKEN_KEYS {
         let mut stmt = conn
             .prepare("SELECT value FROM ItemTable WHERE key = ?1 LIMIT 1")
@@ -165,26 +149,19 @@ fn read_token_from_db(path: &Path) -> Option<String> {
     None
 }
 
-/// 探测本机 Cursor 登录态（不读取 token 明文）。
-pub fn probe() -> LocalSessionProbe {
-    let homes_tried: Vec<String> = home_dir_candidates()
-        .into_iter()
-        .map(|p| p.display().to_string())
-        .collect();
-    let paths = resolve_state_db_paths();
-    let db_paths_found = paths.len();
-    let mut db_paths_openable = 0;
-    let mut token_len = None;
+/// 单次打开结果：probe 元数据 + 可选 token（token 仅内存传递，不入日志）。
+#[derive(Debug)]
+pub struct LocalSessionRead {
+    pub probe: LocalSessionProbe,
+    pub access_token: Option<String>,
+}
 
-    for path in &paths {
-        if open_readonly(path).is_some() {
-            db_paths_openable += 1;
-        }
-        if token_len.is_none() {
-            token_len = token_len_from_db(path);
-        }
-    }
-
+fn build_probe(
+    homes_tried: Vec<String>,
+    db_paths_found: usize,
+    db_paths_openable: usize,
+    token_len: Option<usize>,
+) -> LocalSessionProbe {
     let failure = if db_paths_found == 0 {
         Some("cursor_db_not_found".into())
     } else if db_paths_openable == 0 {
@@ -204,19 +181,50 @@ pub fn probe() -> LocalSessionProbe {
     }
 }
 
-/// 从 Cursor `state.vscdb` 读取 accessToken；不可读时返回 `None`（不 panic）。
-pub fn read_access_token() -> Option<String> {
-    for path in resolve_state_db_paths() {
-        if let Some(token) = read_token_from_db(&path) {
-            return Some(token);
+/// 每候选路径至多只读打开一次，同时得到 probe 字段与 accessToken。
+pub fn probe_and_read() -> LocalSessionRead {
+    let homes_tried: Vec<String> = home_dir_candidates()
+        .into_iter()
+        .map(|p| p.display().to_string())
+        .collect();
+    let paths = resolve_state_db_paths();
+    let db_paths_found = paths.len();
+    let mut db_paths_openable = 0;
+    let mut access_token = None;
+
+    for path in &paths {
+        let Some(conn) = open_readonly(path) else {
+            continue;
+        };
+        db_paths_openable += 1;
+        if access_token.is_none() {
+            access_token = read_token_from_conn(&conn);
         }
     }
-    None
+
+    let token_len = access_token.as_ref().map(|t| t.len());
+    let probe = build_probe(homes_tried, db_paths_found, db_paths_openable, token_len);
+    LocalSessionRead {
+        probe,
+        access_token,
+    }
+}
+
+/// 探测本机 Cursor 登录态（不返回 token 明文）。
+pub fn probe() -> LocalSessionProbe {
+    probe_and_read().probe
+}
+
+/// 从 Cursor `state.vscdb` 读取 accessToken；不可读时返回 `None`（不 panic）。
+/// 刷新路径请优先用 [`probe_and_read`]，避免与 probe 双重打开。
+#[allow(dead_code)] // 公开薄封装；生产刷新走 probe_and_read
+pub fn read_access_token() -> Option<String> {
+    probe_and_read().access_token
 }
 
 /// 是否检测到本机 Cursor 登录态（不验证 token 有效性）。
 pub fn has_local_session() -> bool {
-    probe().token_len.is_some()
+    probe_and_read().probe.token_len.is_some()
 }
 
 #[cfg(test)]
@@ -265,6 +273,34 @@ mod tests {
     }
 
     #[test]
+    fn probe_and_read_temp_db_single_pass() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let dir = std::env::temp_dir().join(format!(
+            "usages-local-session-probe-read-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("temp dir");
+
+        let db_path = write_test_db(&dir, "single-pass-token");
+        std::env::set_var("USAGES_CURSOR_STATE_DB", &db_path);
+
+        let session = probe_and_read();
+        assert_eq!(session.probe.db_paths_found, 1);
+        assert_eq!(session.probe.db_paths_openable, 1);
+        assert_eq!(session.probe.token_len, Some("single-pass-token".len()));
+        assert!(session.probe.failure.is_none());
+        assert_eq!(session.access_token.as_deref(), Some("single-pass-token"));
+
+        // 薄封装与合并 API 一致
+        assert_eq!(probe().token_len, session.probe.token_len);
+        assert_eq!(read_access_token().as_deref(), Some("single-pass-token"));
+
+        std::env::remove_var("USAGES_CURSOR_STATE_DB");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn missing_db_returns_none() {
         let _guard = ENV_LOCK.lock().expect("env lock");
         std::env::set_var(
@@ -272,6 +308,13 @@ mod tests {
             "/tmp/usages-nonexistent-state-vscdb-xyz",
         );
         assert!(read_access_token().is_none());
+        let session = probe_and_read();
+        assert_eq!(session.probe.db_paths_found, 0);
+        assert_eq!(
+            session.probe.failure.as_deref(),
+            Some("cursor_db_not_found")
+        );
+        assert!(session.access_token.is_none());
         std::env::remove_var("USAGES_CURSOR_STATE_DB");
     }
 

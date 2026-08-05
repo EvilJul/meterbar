@@ -41,6 +41,15 @@
           </div>
         </header>
 
+        <div class="panel-meta" aria-live="polite">
+          <div class="panel-meta-left">
+            <span id="footer-auto">Auto refresh</span>
+            <span class="status-sep" aria-hidden="true">·</span>
+            <span id="footer-updated">Updated —</span>
+          </div>
+          <span class="panel-meta-right">Local only</span>
+        </div>
+
         <button
           type="button"
           class="compact-toggle"
@@ -54,8 +63,8 @@
           </svg>
         </button>
 
-        <div class="panel-body" id="panel-overview">
-          <div class="cursor-section" id="cursor-section">
+        <div class="panel-body scroll-fade" id="panel-overview">
+          <div class="cursor-section provider-sortable" id="cursor-section" data-provider="cursor">
             <section class="card card-cursor" id="card-cursor" aria-label="Cursor 用量">
               <div class="cursor-compact hidden" id="cursor-compact">
                 <div class="card-header cursor-compact-header">
@@ -97,7 +106,30 @@
             </section>
           </div>
 
-          <section class="card card-deepseek hidden" id="card-deepseek" aria-label="DeepSeek 余额">
+          <section class="card card-codex provider-sortable" id="card-codex" data-provider="codex" aria-label="Codex 额度">
+            <div class="card-header">
+              <span class="card-tag tag-codex">Codex</span>
+              <span class="card-meta" id="codex-membership"></span>
+            </div>
+            <div class="usage-stack">
+              <div class="usage-row hidden" id="codex-usage-row">
+                <div class="usage-row-head">
+                  <span class="usage-name">Rate limit</span>
+                  <span class="usage-pct" id="codex-usage-pct">—</span>
+                </div>
+                <div class="progress-track" aria-hidden="true">
+                  <div class="progress-fill codex" id="codex-usage-progress"></div>
+                </div>
+              </div>
+            </div>
+            <div class="card-footer-row">
+              <span class="detail-value" id="codex-detail">—</span>
+              <span class="card-period" id="codex-period"></span>
+            </div>
+            <p class="card-alert hidden" id="codex-alert"></p>
+          </section>
+
+          <section class="card card-deepseek provider-sortable hidden" id="card-deepseek" data-provider="deepseek" aria-label="DeepSeek 余额">
             <div class="card-header">
               <span class="card-tag tag-deepseek">DeepSeek</span>
               <span class="card-meta" id="deepseek-currency"></span>
@@ -144,7 +176,7 @@
             </div>
           </section>
 
-          <section class="card card-latency" id="card-latency" aria-label="延迟与出口区域">
+          <section class="card card-latency" id="card-latency" aria-label="延迟与出口区域及公网 IP">
             <div class="card-header">
               <span class="card-tag tag-latency">Latency</span>
             </div>
@@ -158,20 +190,14 @@
               </div>
               <div class="latency-block latency-region-block">
                 <span class="latency-block-label">出口</span>
-                <p class="latency-region truncate" id="latency-region" title="">—</p>
+                <div class="latency-egress" id="latency-egress" title="">
+                  <p class="latency-egress-ip" id="latency-egress-ip" hidden></p>
+                  <p class="latency-region truncate" id="latency-region">—</p>
+                </div>
               </div>
             </div>
           </section>
         </div>
-
-        <footer class="status-bar">
-          <div class="status-left">
-            <span id="footer-auto">Auto refresh</span>
-            <span class="status-sep" aria-hidden="true">·</span>
-            <span id="footer-updated">Updated —</span>
-          </div>
-          <span class="status-right">Local only</span>
-        </footer>
       </main>
 
       <main class="panel settings view view-hidden" id="view-settings" aria-hidden="true">
@@ -187,7 +213,7 @@
           </div>
         </header>
 
-        <form id="settings-form" class="settings-body">
+        <form id="settings-form" class="settings-body scroll-fade">
           <section
             class="settings-group settings-provider"
             data-provider="cursor"
@@ -230,6 +256,90 @@
                   <button type="button" class="btn" id="btn-diagnose-session">诊断本机会话</button>
                 </div>
                 <p class="field-hint diagnose-result" id="diagnose-result" aria-live="polite"></p>
+                <div class="field field-switch" data-provider="cursor">
+                  <div class="switch-row" data-switch-for="visibility-cursor">
+                    <div class="switch-labels">
+                      <span class="field-label">看板显示</span>
+                      <span class="field-hint" id="visibility-cursor-hint">自动（已配置才显示）</span>
+                    </div>
+                    <button
+                      type="button"
+                      class="ios-switch"
+                      id="visibility-cursor"
+                      role="switch"
+                      aria-checked="true"
+                      aria-label="看板显示"
+                      data-provider="cursor"
+                      data-mode="auto"
+                    >
+                      <span class="ios-switch-thumb" aria-hidden="true"></span>
+                    </button>
+                  </div>
+                  <button
+                    type="button"
+                    class="switch-always-btn"
+                    id="visibility-cursor-always"
+                    aria-pressed="false"
+                    hidden
+                  >
+                    始终显示
+                  </button>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section
+            class="settings-group settings-provider"
+            data-provider="codex"
+            aria-labelledby="settings-codex-title"
+          >
+            <button
+              type="button"
+              class="settings-group-toggle"
+              id="settings-codex-toggle"
+              aria-expanded="true"
+              aria-controls="settings-codex-body"
+            >
+              <span class="settings-group-title" id="settings-codex-title">Codex</span>
+              <svg class="chevron" width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
+                <path d="M2 3.5 5 6.5 8 3.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </button>
+            <div class="settings-group-body" id="settings-codex-body">
+              <div class="settings-group-body-inner">
+                <p class="field-hint settings-intro">
+                  读取本机 Codex / ChatGPT 登录态的额度。无需在此填写密钥；未登录时默认不显示看板卡片。
+                </p>
+                <div class="field field-switch" data-provider="codex">
+                  <div class="switch-row" data-switch-for="visibility-codex">
+                    <div class="switch-labels">
+                      <span class="field-label">看板显示</span>
+                      <span class="field-hint" id="visibility-codex-hint">自动（已配置才显示）</span>
+                    </div>
+                    <button
+                      type="button"
+                      class="ios-switch"
+                      id="visibility-codex"
+                      role="switch"
+                      aria-checked="true"
+                      aria-label="看板显示"
+                      data-provider="codex"
+                      data-mode="auto"
+                    >
+                      <span class="ios-switch-thumb" aria-hidden="true"></span>
+                    </button>
+                  </div>
+                  <button
+                    type="button"
+                    class="switch-always-btn"
+                    id="visibility-codex-always"
+                    aria-pressed="false"
+                    hidden
+                  >
+                    始终显示
+                  </button>
+                </div>
               </div>
             </div>
           </section>
@@ -272,12 +382,64 @@
                   <button type="button" class="btn btn-text" id="btn-clear-deepseek">清除</button>
                   <span class="field-status" id="deepseek-key-status" aria-live="polite">未保存</span>
                 </div>
+                <div class="field field-switch" data-provider="deepseek">
+                  <div class="switch-row" data-switch-for="visibility-deepseek">
+                    <div class="switch-labels">
+                      <span class="field-label">看板显示</span>
+                      <span class="field-hint" id="visibility-deepseek-hint">自动（已配置才显示）</span>
+                    </div>
+                    <button
+                      type="button"
+                      class="ios-switch"
+                      id="visibility-deepseek"
+                      role="switch"
+                      aria-checked="true"
+                      aria-label="看板显示"
+                      data-provider="deepseek"
+                      data-mode="auto"
+                    >
+                      <span class="ios-switch-thumb" aria-hidden="true"></span>
+                    </button>
+                  </div>
+                  <button
+                    type="button"
+                    class="switch-always-btn"
+                    id="visibility-deepseek-always"
+                    aria-pressed="false"
+                    hidden
+                  >
+                    始终显示
+                  </button>
+                </div>
               </div>
             </div>
           </section>
 
+          <section class="settings-group" aria-labelledby="settings-order-title">
+            <h2 class="settings-group-title" id="settings-order-title">看板排序</h2>
+            <p class="field-hint settings-intro">可在主界面拖动供应商卡片调整显示顺序（不含 System / Latency）。</p>
+          </section>
+
           <section class="settings-group" aria-labelledby="settings-general-title">
             <h2 class="settings-group-title" id="settings-general-title">General</h2>
+            <div class="field field-switch">
+              <div class="switch-row" data-switch-for="show-system-section">
+                <div class="switch-labels">
+                  <span class="field-label">显示系统指标</span>
+                  <span class="field-hint">同时控制 System 与 Latency 卡片</span>
+                </div>
+                <button
+                  type="button"
+                  class="ios-switch"
+                  id="show-system-section"
+                  role="switch"
+                  aria-checked="true"
+                  aria-label="显示系统指标"
+                >
+                  <span class="ios-switch-thumb" aria-hidden="true"></span>
+                </button>
+              </div>
+            </div>
             <label class="field">
               <span class="field-label">延迟探测目标</span>
               <input id="latency-target-input" type="url" placeholder="https://cursor.com" />
