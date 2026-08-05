@@ -1,0 +1,308 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="/src/styles.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Usages</title>
+    <script type="module" src="/src/main.ts" defer></script>
+  </head>
+
+  <body>
+    <div class="panel-shell">
+      <div class="view-stack">
+      <main class="panel view" id="view-main">
+        <header class="toolbar">
+          <div class="toolbar-brand">
+            <div class="brand-icon" aria-hidden="true">
+              <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                <path d="M3 9.5c1.2-2.8 2.4-3.5 3.5-3.5s2.1.9 3 2.5c.9 1.6 1.8 2.5 3 2.5" stroke="#fff" stroke-width="1.5" stroke-linecap="round"/>
+                <path d="M3 12.5c1.5-1.2 2.8-1.8 4-1.8 1.4 0 2.5.8 3.5 2.2 1 1.4 2.1 2.1 3.5 2.1" stroke="#fff" stroke-width="1.5" stroke-linecap="round" opacity="0.75"/>
+              </svg>
+            </div>
+            <div class="toolbar-leading">
+              <h1 class="toolbar-title">AI Usage Monitor</h1>
+              <p class="toolbar-subtitle">Local system overview</p>
+            </div>
+          </div>
+          <div class="toolbar-actions">
+            <button type="button" class="toolbar-btn" id="btn-refresh" title="刷新" aria-label="刷新">
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                <path d="M11.5 7A4.5 4.5 0 1 1 7 2.5" stroke="currentColor" stroke-width="1.35" stroke-linecap="round"/>
+                <path d="M7 1v2.5h2.5" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </button>
+            <button type="button" class="toolbar-btn" id="btn-settings" title="设置" aria-label="设置">
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                <circle cx="7" cy="7" r="2" stroke="currentColor" stroke-width="1.35"/>
+                <path d="M7 1.5v1.2M7 11.3v1.2M1.5 7h1.2M11.3 7h1.2M3.05 3.05l.85.85M10.1 10.1l.85.85M3.05 10.95l.85-.85M10.1 3.9l.85-.85" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+              </svg>
+            </button>
+          </div>
+        </header>
+
+        <button
+          type="button"
+          class="compact-toggle"
+          id="btn-compact-toggle"
+          aria-expanded="true"
+          aria-controls="cursor-section"
+        >
+          <span>Compact overview</span>
+          <svg class="chevron" width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
+            <path d="M2 3.5 5 6.5 8 3.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+
+        <div class="panel-body" id="panel-overview">
+          <div class="cursor-section" id="cursor-section">
+            <section class="card card-cursor" id="card-cursor" aria-label="Cursor 用量">
+              <div class="cursor-compact hidden" id="cursor-compact">
+                <div class="card-header cursor-compact-header">
+                  <span class="card-tag tag-cursor">Cursor</span>
+                  <span class="card-meta" id="cursor-compact-text"></span>
+                </div>
+              </div>
+              <div class="cursor-full" id="cursor-full">
+            <div class="card-header">
+              <span class="card-tag tag-cursor">Cursor</span>
+              <span class="card-meta" id="cursor-membership"></span>
+            </div>
+            <div class="usage-stack">
+              <div class="usage-row hidden" id="cursor-auto-row">
+                <div class="usage-row-head">
+                  <span class="usage-name">Auto usage</span>
+                  <span class="usage-pct" id="cursor-auto-pct">—</span>
+                </div>
+                <div class="progress-track" aria-hidden="true">
+                  <div class="progress-fill cursor" id="cursor-auto-progress"></div>
+                </div>
+              </div>
+              <div class="usage-row hidden" id="cursor-api-row">
+                <div class="usage-row-head">
+                  <span class="usage-name">API usage</span>
+                  <span class="usage-pct" id="cursor-api-pct">—</span>
+                </div>
+                <div class="progress-track" aria-hidden="true">
+                  <div class="progress-fill cursor" id="cursor-api-progress"></div>
+                </div>
+              </div>
+            </div>
+            <div class="card-footer-row">
+              <span class="detail-value" id="cursor-amount">—</span>
+              <span class="card-period" id="cursor-period"></span>
+            </div>
+            <p class="card-alert hidden" id="cursor-alert"></p>
+              </div>
+            </section>
+          </div>
+
+          <section class="card card-deepseek hidden" id="card-deepseek" aria-label="DeepSeek 余额">
+            <div class="card-header">
+              <span class="card-tag tag-deepseek">DeepSeek</span>
+              <span class="card-meta" id="deepseek-currency"></span>
+            </div>
+            <div class="balance-row">
+              <span class="balance-label">可用余额</span>
+              <span class="balance-value" id="deepseek-balance">—</span>
+            </div>
+            <div class="card-footer-row">
+              <span class="detail-value" id="deepseek-detail">—</span>
+            </div>
+            <p class="card-alert hidden" id="deepseek-alert"></p>
+          </section>
+
+          <section class="card card-system" id="card-system" aria-label="系统指标">
+            <div class="card-header">
+              <span class="card-tag tag-system">System</span>
+            </div>
+            <div class="stat-grid">
+              <div class="stat-cell">
+                <span class="stat-label">CPU</span>
+                <span class="stat-value" id="sys-cpu-pct">—</span>
+                <div class="stat-bar" aria-hidden="true">
+                  <div class="stat-bar-fill cpu" id="sys-cpu-bar"></div>
+                </div>
+                <span class="stat-sub" id="sys-cpu-sub">—</span>
+              </div>
+              <div class="stat-cell">
+                <span class="stat-label">GPU</span>
+                <span class="stat-value" id="sys-gpu-pct">N/A</span>
+                <div class="stat-bar" aria-hidden="true">
+                  <div class="stat-bar-fill gpu" id="sys-gpu-bar"></div>
+                </div>
+                <span class="stat-sub" id="sys-gpu-sub">—</span>
+              </div>
+              <div class="stat-cell">
+                <span class="stat-label">Memory</span>
+                <span class="stat-value" id="sys-mem-pct">—</span>
+                <div class="stat-bar" aria-hidden="true">
+                  <div class="stat-bar-fill mem" id="sys-mem-bar"></div>
+                </div>
+                <span class="stat-sub" id="sys-mem-sub">—</span>
+              </div>
+            </div>
+          </section>
+
+          <section class="card card-latency" id="card-latency" aria-label="延迟与出口区域">
+            <div class="card-header">
+              <span class="card-tag tag-latency">Latency</span>
+            </div>
+            <div class="latency-body">
+              <div class="latency-block">
+                <span class="latency-block-label">延迟</span>
+                <div class="latency-row">
+                  <div class="latency-spark" id="latency-spark" aria-hidden="true"></div>
+                  <p class="latency-display" id="latency-ms">—</p>
+                </div>
+              </div>
+              <div class="latency-block latency-region-block">
+                <span class="latency-block-label">出口</span>
+                <p class="latency-region truncate" id="latency-region" title="">—</p>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <footer class="status-bar">
+          <div class="status-left">
+            <span id="footer-auto">Auto refresh</span>
+            <span class="status-sep" aria-hidden="true">·</span>
+            <span id="footer-updated">Updated —</span>
+          </div>
+          <span class="status-right">Local only</span>
+        </footer>
+      </main>
+
+      <main class="panel settings view view-hidden" id="view-settings" aria-hidden="true">
+        <header class="toolbar">
+          <button type="button" class="toolbar-btn toolbar-back" id="btn-back" title="返回" aria-label="返回">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+              <path d="M8.5 2.5 4 7l4.5 4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </button>
+          <div class="toolbar-leading">
+            <h1 class="toolbar-title">Settings</h1>
+            <p class="toolbar-subtitle">凭证与刷新</p>
+          </div>
+        </header>
+
+        <form id="settings-form" class="settings-body">
+          <section
+            class="settings-group settings-provider"
+            data-provider="cursor"
+            aria-labelledby="settings-cursor-title"
+          >
+            <button
+              type="button"
+              class="settings-group-toggle"
+              id="settings-cursor-toggle"
+              aria-expanded="true"
+              aria-controls="settings-cursor-body"
+            >
+              <span class="settings-group-title" id="settings-cursor-title">Cursor</span>
+              <svg class="chevron" width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
+                <path d="M2 3.5 5 6.5 8 3.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </button>
+            <div class="settings-group-body" id="settings-cursor-body">
+              <div class="settings-group-body-inner">
+                <p class="field-hint settings-intro">
+                  若本机已登录 Cursor，将自动读取登录会话获取用量，无需粘贴 Cookie。Cookie 仅作可选兜底。
+                </p>
+                <label class="field">
+                  <span class="field-label">Session Cookie（可选）</span>
+                  <textarea
+                    id="token-input"
+                    rows="2"
+                    autocomplete="off"
+                    spellcheck="false"
+                    placeholder="通常无需填写；登录 Cursor 即可"
+                  ></textarea>
+                  <span class="field-hint" id="token-hint">保存后不会回显完整 Cookie，属正常。</span>
+                </label>
+                <div class="field-actions">
+                  <button type="button" class="btn btn-default" id="btn-save-token">保存</button>
+                  <button type="button" class="btn btn-text" id="btn-clear-token">清除</button>
+                  <span class="field-status" id="token-status" aria-live="polite">未保存</span>
+                </div>
+                <div class="field-actions diagnose-row">
+                  <button type="button" class="btn" id="btn-diagnose-session">诊断本机会话</button>
+                </div>
+                <p class="field-hint diagnose-result" id="diagnose-result" aria-live="polite"></p>
+              </div>
+            </div>
+          </section>
+
+          <section
+            class="settings-group settings-provider"
+            data-provider="deepseek"
+            aria-labelledby="settings-deepseek-title"
+          >
+            <button
+              type="button"
+              class="settings-group-toggle"
+              id="settings-deepseek-toggle"
+              aria-expanded="true"
+              aria-controls="settings-deepseek-body"
+            >
+              <span class="settings-group-title" id="settings-deepseek-title">DeepSeek</span>
+              <svg class="chevron" width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
+                <path d="M2 3.5 5 6.5 8 3.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </button>
+            <div class="settings-group-body" id="settings-deepseek-body">
+              <div class="settings-group-body-inner">
+                <p class="field-hint settings-intro">
+                  使用官方 API Key 查询账户余额（GET /user/balance）。未配置时主面板不显示 DeepSeek 卡片。
+                </p>
+                <label class="field">
+                  <span class="field-label">API Key</span>
+                  <input
+                    id="deepseek-key-input"
+                    type="password"
+                    autocomplete="off"
+                    spellcheck="false"
+                    placeholder="sk-…"
+                  />
+                  <span class="field-hint" id="deepseek-key-hint">保存后不会回显完整 Key，属正常。</span>
+                </label>
+                <div class="field-actions">
+                  <button type="button" class="btn btn-default" id="btn-save-deepseek">保存</button>
+                  <button type="button" class="btn btn-text" id="btn-clear-deepseek">清除</button>
+                  <span class="field-status" id="deepseek-key-status" aria-live="polite">未保存</span>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section class="settings-group" aria-labelledby="settings-general-title">
+            <h2 class="settings-group-title" id="settings-general-title">General</h2>
+            <label class="field">
+              <span class="field-label">延迟探测目标</span>
+              <input id="latency-target-input" type="url" placeholder="https://cursor.com" />
+            </label>
+            <label class="field">
+              <span class="field-label">Cursor 刷新间隔（秒，≥60）</span>
+              <input id="cursor-refresh-input" type="number" min="60" step="1" />
+            </label>
+            <label class="field">
+              <span class="field-label">系统/延迟刷新间隔（秒，10–30）</span>
+              <input id="system-refresh-input" type="number" min="10" max="30" step="1" />
+            </label>
+            <label class="field">
+              <span class="field-label">高延迟阈值（毫秒）</span>
+              <input id="high-latency-input" type="number" min="1" step="1" />
+            </label>
+          </section>
+
+          <div class="settings-footer">
+            <button type="submit" class="btn btn-accent">保存设置</button>
+            <p class="settings-msg" id="settings-msg" role="status"></p>
+          </div>
+        </form>
+      </main>
+      </div>
+    </div>
+  </body>
+</html>
