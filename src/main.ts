@@ -384,6 +384,12 @@ function applyBoardLayout(state: PanelState): void {
     }
   }
 
+  const visibleCount = order.filter((id) => {
+    const node = providerDomNode(id);
+    return node != null && !node.classList.contains("hidden");
+  }).length;
+  overview.classList.toggle("provider-sort-disabled", visibleCount < 2);
+
   const cursorVisible = shouldShowProvider(
     parseVisibilityMode(currentSettings.providerVisibility.cursor),
     isConfigured("cursor", state),
@@ -995,10 +1001,22 @@ async function persistProviderVisibility(
 
 async function persistSettingsPatch(
   patch: Partial<AppSettings>,
+  options?: { skipLayout?: boolean },
 ): Promise<AppSettings> {
   const saved = await invoke<AppSettings>("update_settings", { patch });
   currentSettings = normalizeSettings(saved);
-  if (panelState) applyBoardLayout(panelState);
+  // 拖拽松手后 DOM 往往已是最终序；再 layout 会 insertBefore 造成闪一下。
+  if (!options?.skipLayout && panelState) {
+    applyBoardLayout(panelState);
+  } else if (
+    options?.skipLayout &&
+    panelState &&
+    !providerOrderMatchesDom(
+      normalizeProviderOrder(currentSettings.providerOrder),
+    )
+  ) {
+    applyBoardLayout(panelState);
+  }
   return currentSettings;
 }
 
@@ -1035,17 +1053,15 @@ function mergeVisibleIntoProviderOrder(
   });
 }
 
-function clearProviderDropIndicators(): void {
-  document
-    .querySelectorAll(".provider-sortable.drop-before, .provider-sortable.drop-after")
-    .forEach((el) => {
-      el.classList.remove("drop-before", "drop-after");
-    });
-}
-
 function bindProviderDragSort(): void {
   const overview = $("panel-overview");
-  const DRAG_THRESHOLD_PX = 6;
+  /** 略低于 6px，菜单栏窄面板里更容易启动拖拽 */
+  const DRAG_THRESHOLD_PX = 3;
+  const EDGE_SCROLL_PX = 28;
+  const EDGE_SCROLL_STEP = 10;
+  const FLIP_MS = 220;
+  const SETTLE_MS = 180;
+  const FLOAT_SCALE = 1.02;
 
   type DragState = {
     pointerId: number;
@@ -1053,151 +1069,397 @@ function bindProviderDragSort(): void {
     sourceId: ProviderId;
     startY: number;
     started: boolean;
-    insertBefore: HTMLElement | null;
-    /** insertBefore 为 null 时，插到最后一个可见供应商之后（System 之前） */
-    insertAfterLast: boolean;
+    settling: boolean;
+    /** 按下时的完整 providerOrder，取消时回滚 */
+    orderBefore: ProviderId[];
+    grabOffsetX: number;
+    grabOffsetY: number;
+    placeholder: HTMLDivElement | null;
   };
 
   let drag: DragState | null = null;
 
-  const endDrag = (cancelled: boolean) => {
-    if (!drag) return;
-    const { source, sourceId, insertBefore, started } = drag;
-    try {
-      source.releasePointerCapture(drag.pointerId);
-    } catch {
-      /* ignore */
+  const detachDocListeners = () => {
+    document.removeEventListener("pointermove", onDocPointerMove);
+    document.removeEventListener("pointerup", onDocPointerUp);
+    document.removeEventListener("pointercancel", onDocPointerCancel);
+  };
+
+  const restoreOrder = (order: ProviderId[]) => {
+    const systemCard = $("card-system");
+    for (const id of order) {
+      const node = providerDomNode(id);
+      if (!node) continue;
+      overview.insertBefore(node, systemCard);
     }
-    source.classList.remove("provider-dragging");
-    overview.classList.remove("provider-sorting");
-    clearProviderDropIndicators();
-    providerDragActive = false;
-    drag = null;
+  };
 
-    if (cancelled || !started) return;
+  const setDragLock = (active: boolean) => {
+    providerDragActive = active;
+    document.body.classList.toggle("provider-drag-active", active);
+    void invoke("set_panel_drag_active", { active }).catch(() => {
+      /* 旧后端无此命令时忽略 */
+    });
+  };
 
-    const visible = visibleProviderNodes().filter((n) => n !== source);
-    const nextVisible: ProviderId[] = [];
-    let placed = false;
-    for (const node of visible) {
-      if (insertBefore && node === insertBefore) {
-        nextVisible.push(sourceId);
-        placed = true;
+  const clearFlipStyles = (nodes: HTMLElement[]) => {
+    for (const n of nodes) {
+      n.classList.remove("provider-flip");
+      n.style.transition = "";
+      n.style.transform = "";
+    }
+  };
+
+  const clearFloatStyles = (source: HTMLElement) => {
+    source.classList.remove("provider-drag-float", "provider-drag-settling");
+    source.style.position = "";
+    source.style.left = "";
+    source.style.top = "";
+    source.style.width = "";
+    source.style.height = "";
+    source.style.zIndex = "";
+    source.style.pointerEvents = "";
+    source.style.transform = "";
+    source.style.transition = "";
+    source.style.willChange = "";
+    source.style.transformOrigin = "";
+    source.style.boxShadow = "";
+  };
+
+  /** 拖拽中 source 已挂到 body：按占位符位置拼出可见顺序 */
+  const visibleOrderWithPlaceholder = (
+    sourceId: ProviderId,
+    placeholder: HTMLElement,
+  ): ProviderId[] => {
+    const ids: ProviderId[] = [];
+    for (const child of Array.from(overview.children)) {
+      if (child === placeholder) {
+        ids.push(sourceId);
+        continue;
       }
-      const id = node.dataset.provider;
-      if (isProviderId(id)) nextVisible.push(id);
+      const el = child as HTMLElement;
+      const id = el.dataset.provider;
+      if (!isProviderId(id) || el.classList.contains("hidden")) continue;
+      ids.push(id);
     }
-    if (!placed) nextVisible.push(sourceId);
+    return ids;
+  };
 
-    const full = normalizeProviderOrder(currentSettings.providerOrder);
+  const measureTops = (nodes: HTMLElement[]) => {
+    const map = new Map<HTMLElement, number>();
+    for (const n of nodes) {
+      map.set(n, n.getBoundingClientRect().top);
+    }
+    return map;
+  };
+
+  let flipGen = 0;
+
+  /** FLIP：列表让位，220ms ease，避免瞬间 jump */
+  const flipToNewLayout = (nodes: HTMLElement[], first: Map<HTMLElement, number>) => {
+    const gen = ++flipGen;
+    for (const n of nodes) {
+      const prev = first.get(n);
+      if (prev == null) continue;
+      const next = n.getBoundingClientRect().top;
+      const dy = prev - next;
+      if (Math.abs(dy) < 0.5) continue;
+      n.classList.add("provider-flip");
+      n.style.transition = "none";
+      n.style.transform = `translateY(${dy}px)`;
+    }
+    // 强制回流后再播到位动画
+    void overview.offsetHeight;
+    for (const n of nodes) {
+      if (!n.classList.contains("provider-flip")) continue;
+      n.style.transition = `transform ${FLIP_MS}ms var(--ease-mac)`;
+      n.style.transform = "";
+    }
+    window.setTimeout(() => {
+      if (gen !== flipGen) return;
+      clearFlipStyles(nodes);
+    }, FLIP_MS + 40);
+  };
+
+  const updateFloatPosition = (clientX: number, clientY: number) => {
+    if (!drag) return;
+    const x = clientX - drag.grabOffsetX;
+    const y = clientY - drag.grabOffsetY;
+    drag.source.style.transform = `translate3d(${x}px, ${y}px, 0) scale(${FLOAT_SCALE})`;
+  };
+
+  const beginFloat = (clientX: number, clientY: number) => {
+    if (!drag) return;
+    const { source } = drag;
+    const rect = source.getBoundingClientRect();
+    drag.grabOffsetX = clientX - rect.left;
+    drag.grabOffsetY = clientY - rect.top;
+
+    const placeholder = document.createElement("div");
+    placeholder.className = "provider-drag-placeholder";
+    placeholder.style.height = `${rect.height}px`;
+    placeholder.setAttribute("aria-hidden", "true");
+    overview.insertBefore(placeholder, source);
+    drag.placeholder = placeholder;
+
+    // 移出文档流，避免 live 重排时源节点干扰顺序
+    document.body.appendChild(source);
+    source.classList.add("provider-drag-float");
+    source.style.position = "fixed";
+    source.style.left = "0";
+    source.style.top = "0";
+    source.style.width = `${rect.width}px`;
+    source.style.zIndex = "1000";
+    source.style.pointerEvents = "none";
+    source.style.transformOrigin = "0 0";
+    source.style.willChange = "transform";
+    source.style.transition = "none";
+    updateFloatPosition(clientX, clientY);
+  };
+
+  const teardownFloatDom = (source: HTMLElement, placeholder: HTMLElement | null) => {
+    if (placeholder?.isConnected) {
+      overview.insertBefore(source, placeholder);
+      placeholder.remove();
+    } else if (!overview.contains(source)) {
+      const systemCard = $("card-system");
+      overview.insertBefore(source, systemCard);
+    }
+    clearFloatStyles(source);
+  };
+
+  const persistAfterDrop = (
+    previousOrder: ProviderId[],
+    nextVisible: ProviderId[],
+  ) => {
+    const full = normalizeProviderOrder(previousOrder);
     const merged = mergeVisibleIntoProviderOrder(full, nextVisible);
     const unchanged =
       merged.length === full.length &&
       merged.every((id, i) => id === full[i]);
-    if (unchanged) return;
+    if (unchanged) {
+      // DOM 已是目标序：勿再 applyBoardLayout，避免无谓重排闪烁
+      setDragLock(false);
+      return;
+    }
 
-    const previousOrder = full;
-    // 乐观更新 DOM，再持久化
     currentSettings = { ...currentSettings, providerOrder: merged };
-    if (panelState) applyBoardLayout(panelState);
+    // 仅当乐观 DOM 与完整 order（含隐藏项槽位）不一致时才纠正
+    if (panelState && !providerOrderMatchesDom(merged)) {
+      applyBoardLayout(panelState);
+    }
 
+    // 锁持续到写回完成，避免松手瞬间 refresh/focus 再跑 layout
     void (async () => {
       try {
-        await persistSettingsPatch({ providerOrder: merged });
+        await persistSettingsPatch(
+          { providerOrder: merged },
+          { skipLayout: true },
+        );
       } catch (err) {
         console.error("persist providerOrder failed", err);
         currentSettings = {
           ...currentSettings,
           providerOrder: previousOrder,
         };
-        if (panelState) applyBoardLayout(panelState);
+        restoreOrder(previousOrder);
+      } finally {
+        setDragLock(false);
       }
     })();
   };
 
-  const updateDropTarget = (clientY: number) => {
-    if (!drag) return;
-    clearProviderDropIndicators();
-    const others = visibleProviderNodes().filter((n) => n !== drag!.source);
+  const endDrag = (cancelled: boolean) => {
+    if (!drag || drag.settling) return;
+    const state = drag;
+    const { source, started, orderBefore, placeholder } = state;
+    detachDocListeners();
+    try {
+      if (source.hasPointerCapture(state.pointerId)) {
+        source.releasePointerCapture(state.pointerId);
+      }
+    } catch {
+      /* ignore */
+    }
+    overview.classList.remove("provider-sorting");
+
+    if (!started) {
+      drag = null;
+      setDragLock(false);
+      return;
+    }
+
+    if (cancelled) {
+      teardownFloatDom(source, placeholder);
+      clearFlipStyles(visibleProviderNodes());
+      drag = null;
+      currentSettings = { ...currentSettings, providerOrder: orderBefore };
+      restoreOrder(orderBefore);
+      setDragLock(false);
+      return;
+    }
+
+    // settle：浮层落到占位最终位，再清浮层写回
+    state.settling = true;
+    const ph = placeholder;
+    const nextVisible = ph
+      ? visibleOrderWithPlaceholder(state.sourceId, ph)
+      : visibleProviderNodes()
+          .map((n) => n.dataset.provider)
+          .filter(isProviderId);
+
+    const finishSettle = () => {
+      if (drag !== state) return;
+      teardownFloatDom(source, ph);
+      clearFlipStyles(visibleProviderNodes());
+      drag = null;
+      persistAfterDrop(orderBefore, nextVisible);
+    };
+
+    if (!ph?.isConnected) {
+      finishSettle();
+      return;
+    }
+
+    const target = ph.getBoundingClientRect();
+    source.classList.add("provider-drag-settling");
+    source.style.transition = `transform ${SETTLE_MS}ms var(--ease-mac), box-shadow ${SETTLE_MS}ms var(--ease-mac)`;
+    source.style.transform = `translate3d(${target.left}px, ${target.top}px, 0) scale(1)`;
+
+    let settled = false;
+    const onSettleEnd = (ev: TransitionEvent) => {
+      if (ev.propertyName !== "transform") return;
+      if (settled) return;
+      settled = true;
+      source.removeEventListener("transitionend", onSettleEnd);
+      finishSettle();
+    };
+    source.addEventListener("transitionend", onSettleEnd);
+    window.setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      source.removeEventListener("transitionend", onSettleEnd);
+      finishSettle();
+    }, SETTLE_MS + 60);
+  };
+
+  const autoScrollIfNeeded = (clientY: number) => {
+    const rect = overview.getBoundingClientRect();
+    if (clientY < rect.top + EDGE_SCROLL_PX) {
+      overview.scrollTop -= EDGE_SCROLL_STEP;
+    } else if (clientY > rect.bottom - EDGE_SCROLL_PX) {
+      overview.scrollTop += EDGE_SCROLL_STEP;
+    }
+  };
+
+  /** 按指针 Y 移动占位符；其它卡 FLIP 让位 */
+  const syncLiveOrder = (clientY: number) => {
+    if (!drag?.started || drag.settling || !drag.placeholder) return;
+    const { source, placeholder } = drag;
+    const systemCard = $("card-system");
+    const others = visibleProviderNodes().filter((n) => n !== source);
+
     if (others.length === 0) {
-      drag.insertBefore = null;
-      drag.insertAfterLast = true;
+      if (placeholder.nextElementSibling !== systemCard) {
+        overview.insertBefore(placeholder, systemCard);
+      }
       return;
     }
 
     let insertBefore: HTMLElement | null = null;
-    let insertAfterLast = false;
     for (const node of others) {
       const rect = node.getBoundingClientRect();
-      const mid = rect.top + rect.height / 2;
-      if (clientY < mid) {
+      if (clientY < rect.top + rect.height / 2) {
         insertBefore = node;
         break;
       }
     }
-    if (!insertBefore) {
-      insertAfterLast = true;
-      const last = others[others.length - 1]!;
-      last.classList.add("drop-after");
-    } else {
-      insertBefore.classList.add("drop-before");
+
+    const ref = insertBefore ?? systemCard;
+    if (placeholder.nextElementSibling === ref) return;
+
+    const animNodes = [...others, placeholder];
+    // 清掉未完成的 FLIP，避免测量到残留 transform
+    clearFlipStyles(animNodes);
+    const first = measureTops(animNodes);
+    overview.insertBefore(placeholder, ref);
+    flipToNewLayout(animNodes, first);
+  };
+
+  const onDocPointerMove = (e: PointerEvent) => {
+    if (!drag || e.pointerId !== drag.pointerId || drag.settling) return;
+    const dy = Math.abs(e.clientY - drag.startY);
+    if (!drag.started) {
+      if (dy < DRAG_THRESHOLD_PX) return;
+      drag.started = true;
+      overview.classList.add("provider-sorting");
+      window.getSelection()?.removeAllRanges();
+      beginFloat(e.clientX, e.clientY);
     }
-    drag.insertBefore = insertBefore;
-    drag.insertAfterLast = insertAfterLast;
+    e.preventDefault();
+    updateFloatPosition(e.clientX, e.clientY);
+    autoScrollIfNeeded(e.clientY);
+    syncLiveOrder(e.clientY);
+  };
+
+  const onDocPointerUp = (e: PointerEvent) => {
+    if (!drag || e.pointerId !== drag.pointerId) return;
+    endDrag(false);
+  };
+
+  const onDocPointerCancel = (e: PointerEvent) => {
+    if (!drag || e.pointerId !== drag.pointerId) return;
+    endDrag(true);
   };
 
   overview.addEventListener("pointerdown", (e) => {
     if (e.button !== 0) return;
+    if (drag) return;
+    if (overview.classList.contains("provider-sort-disabled")) return;
     const target = e.target as HTMLElement | null;
     if (!target) return;
-    // 避免与紧凑模式按钮等冲突（按钮在 overview 外；此处仅拦交互控件）
-    if (target.closest("button, a, input, textarea, select")) return;
+    // 避免与交互控件冲突
+    if (target.closest("button, a, input, textarea, select, label")) return;
 
-    const source = target.closest<HTMLElement>(".provider-sortable[data-provider]");
+    const source = target.closest<HTMLElement>(
+      ".provider-sortable[data-provider]",
+    );
     if (!source || source.classList.contains("hidden")) return;
     if (!overview.contains(source)) return;
     const sourceId = source.dataset.provider;
     if (!isProviderId(sourceId)) return;
     if (visibleProviderNodes().length < 2) return;
 
+    // 阻止拖拽时选中文本（WebKit 仅靠 CSS 不够）
+    e.preventDefault();
+    window.getSelection()?.removeAllRanges();
+
+    // 尽早上锁，避免阈值前 refresh 重排 DOM，并抑制 tray 失焦 hide
+    setDragLock(true);
     drag = {
       pointerId: e.pointerId,
       source,
       sourceId,
       startY: e.clientY,
       started: false,
-      insertBefore: null,
-      insertAfterLast: false,
+      settling: false,
+      orderBefore: normalizeProviderOrder(currentSettings.providerOrder),
+      grabOffsetX: 0,
+      grabOffsetY: 0,
+      placeholder: null,
     };
+
+    document.addEventListener("pointermove", onDocPointerMove, {
+      passive: false,
+    });
+    document.addEventListener("pointerup", onDocPointerUp);
+    document.addEventListener("pointercancel", onDocPointerCancel);
+
     try {
       source.setPointerCapture(e.pointerId);
     } catch {
       /* ignore */
     }
-  });
-
-  overview.addEventListener("pointermove", (e) => {
-    if (!drag || e.pointerId !== drag.pointerId) return;
-    const dy = Math.abs(e.clientY - drag.startY);
-    if (!drag.started) {
-      if (dy < DRAG_THRESHOLD_PX) return;
-      drag.started = true;
-      providerDragActive = true;
-      drag.source.classList.add("provider-dragging");
-      overview.classList.add("provider-sorting");
-    }
-    e.preventDefault();
-    updateDropTarget(e.clientY);
-  });
-
-  overview.addEventListener("pointerup", (e) => {
-    if (!drag || e.pointerId !== drag.pointerId) return;
-    endDrag(false);
-  });
-
-  overview.addEventListener("pointercancel", (e) => {
-    if (!drag || e.pointerId !== drag.pointerId) return;
-    endDrag(true);
   });
 }
 
@@ -1665,9 +1927,12 @@ window.addEventListener("DOMContentLoaded", () => {
   void win.onFocusChanged(({ payload: focused }) => {
     if (focused) {
       markPanelShown();
-      void refreshAll();
+      // 拖拽中勿 refresh，避免打断排序
+      if (!providerDragActive) void refreshAll();
       return;
     }
+    // 拖拽中保持面板，避免 tray 失焦 hide 把拖拽掐断
+    if (providerDragActive) return;
     if (Date.now() < ignoreBlurUntil) return;
     void win.hide();
   });

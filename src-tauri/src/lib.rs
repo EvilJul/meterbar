@@ -7,7 +7,7 @@ mod settings;
 mod system;
 
 use commands::AppState;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{
     menu::{Menu, MenuItem},
@@ -19,6 +19,8 @@ use tauri::{
 /// 面板最近一次 show 的时间戳（毫秒），用于忽略紧随其后的失焦。
 static PANEL_SHOWN_AT_MS: AtomicU64 = AtomicU64::new(0);
 const BLUR_GRACE_MS: u64 = 350;
+/// 主面板正在拖拽排序时抑制失焦 hide，避免拖到一半窗口被关掉。
+static PANEL_DRAG_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 fn now_ms() -> u64 {
     SystemTime::now()
@@ -32,7 +34,16 @@ fn mark_panel_shown() {
 }
 
 fn should_hide_on_blur() -> bool {
+    if PANEL_DRAG_ACTIVE.load(Ordering::SeqCst) {
+        return false;
+    }
     now_ms().saturating_sub(PANEL_SHOWN_AT_MS.load(Ordering::SeqCst)) >= BLUR_GRACE_MS
+}
+
+/// 前端拖拽排序时调用，防止 tray 面板失焦自动隐藏。
+#[tauri::command]
+fn set_panel_drag_active(active: bool) {
+    PANEL_DRAG_ACTIVE.store(active, Ordering::SeqCst);
 }
 
 fn physical_tray_size(tray_rect: &Rect, scale: f64) -> PhysicalSize<f64> {
@@ -224,6 +235,7 @@ pub fn run() {
             commands::get_panel_state,
             commands::refresh_all,
             commands::diagnose_local_session,
+            set_panel_drag_active,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

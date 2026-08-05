@@ -140,6 +140,7 @@ body {
   background: transparent !important;
   color: var(--text-primary);
   user-select: none;
+  -webkit-user-select: none;
 }
 
 .panel-shell {
@@ -1121,6 +1122,7 @@ body {
   color: var(--text-primary);
   resize: vertical;
   user-select: text;
+  -webkit-user-select: text;
   transition: border-color 0.12s ease, box-shadow 0.12s ease;
 }
 
@@ -1255,36 +1257,75 @@ body {
   position: relative;
   cursor: grab;
   touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
-.provider-sortable.provider-dragging {
-  opacity: 0.42;
-  cursor: grabbing;
+.panel-body.provider-sort-disabled .provider-sortable:not(.hidden) {
+  cursor: default;
 }
 
-.provider-sortable.drop-before::before,
-.provider-sortable.drop-after::after {
-  content: "";
-  position: absolute;
-  left: 2px;
-  right: 2px;
-  height: 2px;
-  border-radius: 1px;
-  background: var(--accent);
+/* 原位占位：半透明虚线框，颜色贴合 accent */
+.provider-drag-placeholder {
+  flex-shrink: 0;
+  box-sizing: border-box;
+  border-radius: var(--radius-card);
+  border: 1.5px dashed rgba(0, 113, 227, 0.42);
+  background: rgba(0, 113, 227, 0.07);
   pointer-events: none;
-  z-index: 2;
 }
 
-.provider-sortable.drop-before::before {
-  top: calc(var(--space-card-gap) / -2 - 1px);
+@media (prefers-color-scheme: dark) {
+  .provider-drag-placeholder {
+    border-color: rgba(64, 156, 255, 0.45);
+    background: rgba(64, 156, 255, 0.1);
+  }
 }
 
-.provider-sortable.drop-after::after {
-  bottom: calc(var(--space-card-gap) / -2 - 1px);
+/* 跟手浮层：轻微放大 + 阴影，不用整卡 opacity */
+.provider-sortable.provider-drag-float {
+  cursor: grabbing;
+  margin: 0;
+  box-shadow:
+    0 10px 28px rgba(0, 0, 0, 0.16),
+    0 2px 8px rgba(0, 0, 0, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.45);
+}
+
+.provider-sortable.provider-drag-float.card {
+  backdrop-filter: blur(14px) saturate(1.2);
+  -webkit-backdrop-filter: blur(14px) saturate(1.2);
+}
+
+.provider-sortable.provider-drag-settling {
+  box-shadow: var(--card-shadow);
+}
+
+/* FLIP 让位期间用 transform，避免 layout jump */
+.provider-sortable.provider-flip,
+.provider-drag-placeholder.provider-flip {
+  will-change: transform;
+  z-index: 1;
 }
 
 .panel-body.provider-sorting {
   user-select: none;
+  -webkit-user-select: none;
+  cursor: grabbing;
+  /* 拖拽时避免滚动手势抢指针；边缘仍由 JS auto-scroll */
+  overscroll-behavior: contain;
+}
+
+/* 拖拽锁期间禁止入场动画重放（含松手到 settings 写回完成） */
+.panel-body.provider-sorting .card,
+body.provider-drag-active .card {
+  animation: none;
+}
+
+body.provider-drag-active {
+  cursor: grabbing;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .field-actions {
