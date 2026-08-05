@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Usages",
+  "productName": "Meterbar",
   "version": "0.1.0",
   "identifier": "com.usages.app",
   "build": {
@@ -15,7 +15,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Usages",
+        "title": "Meterbar",
         "width": 360,
         "height": 480,
         "resizable": false,

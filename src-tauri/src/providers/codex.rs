@@ -28,7 +28,7 @@ use super::UsageProvider;
 
 const RAW_VERSION: &str = "codex/app-server-rateLimits-2026-08-05";
 const CLIENT_NAME: &str = "usages";
-const CLIENT_TITLE: &str = "Usages";
+const CLIENT_TITLE: &str = "Meterbar";
 const CLIENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// 整体超时（含拉起子进程 + 握手 + RPC）。
 const RPC_TIMEOUT: Duration = Duration::from_secs(12);

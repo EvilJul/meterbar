@@ -158,7 +158,7 @@ pub fn run() {
             }
 
             let open = MenuItem::with_id(app, "open", "Open Panel", true, None::<&str>)?;
-            let quit = MenuItem::with_id(app, "quit", "Quit Usages", true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "quit", "Quit Meterbar", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&open, &quit])?;
 
             let icon = app
@@ -172,7 +172,7 @@ pub fn run() {
                 .icon_as_template(false)
                 .menu(&menu)
                 .show_menu_on_left_click(false)
-                .tooltip("Usages — 左键打开面板，右键打开菜单")
+                .tooltip("Meterbar — 左键打开面板，右键打开菜单")
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "open" => show_panel(app, None),
                     "quit" => app.exit(0),

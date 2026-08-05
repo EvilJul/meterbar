@@ -477,7 +477,7 @@ fn no_auth_snapshot(probe: &local_session::LocalSessionProbe) -> UsageSnapshot {
             probe.homes_tried.len()
         ),
         Some("cursor_db_not_openable") => {
-            "找到 Cursor 数据库但无法只读打开（可能被锁或权限不足）。请重启 Cursor；若仍失败，请在「系统设置 → 隐私与安全性 → 完全磁盘访问权限」中允许 Usages"
+            "找到 Cursor 数据库但无法只读打开（可能被锁或权限不足）。请重启 Cursor；若仍失败，请在「系统设置 → 隐私与安全性 → 完全磁盘访问权限」中允许 Meterbar"
                 .to_string()
         }
         Some("cursor_token_missing") => {

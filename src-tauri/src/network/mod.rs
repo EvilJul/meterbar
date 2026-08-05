@@ -14,7 +14,7 @@ const PROBE_TIMEOUT_SECS: u64 = 5;
 /// 区域缓存 TTL，避免频繁调用免费 API。
 const REGION_CACHE_TTL: Duration = Duration::from_secs(300);
 /// 请求头：部分免费 API 对无 UA 的客户端会 403 / 挑战页。
-const USER_AGENT: &str = "Usages/0.1 (macOS; AI Usage Monitor)";
+const USER_AGENT: &str = "Meterbar/0.1 (macOS; local AI usage)";
 /// 主用：ipwho.is（无需 key，国内可达性优于 ipapi.co）。
 const REGION_API_IPWHO: &str = "https://ipwho.is/";
 /// 备用：ipinfo.io（无需 key；国家为 ISO 码）。
