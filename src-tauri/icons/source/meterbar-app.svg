@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-label="Meterbar">
+  <!-- ùP icon-1024.pngñr• + ¢Ý;' + ó tip ÿµ•:ã¦ 55° -->
+  <rect width="1024" height="1024" fill="#191b22"/>
+  <g fill="none" stroke-width="70" stroke-linecap="butt">
+    <!-- Ã (512,512) r=282Ò¦êczöˆ122°’13° Ý13°’68° ÿ -->
+    <path stroke="#608cc0"
+          d="M 362.56 751.15 A 282 282 0 1 1 786.77 575.44"/>
+    <path stroke="#588468"
+          d="M 786.77 575.44 A 282 282 0 0 1 617.64 773.47"/>
+  </g>
+</svg>

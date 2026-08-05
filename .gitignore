@@ -45,3 +45,6 @@ Thumbs.db
 # Tauri / Rust
 src-tauri/target/
 src-tauri/Cargo.lock.bak
+
+# 本地图标备份（生产用导出见 src-tauri/icons/，勿入库）
+src-tauri/icons/_backup_*/

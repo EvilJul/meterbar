@@ -10,6 +10,7 @@ use commands::AppState;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{
+    image::Image,
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     window::{Color, Effect, EffectState, EffectsBuilder},
@@ -161,15 +162,13 @@ pub fn run() {
             let quit = MenuItem::with_id(app, "quit", "Quit Meterbar", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&open, &quit])?;
 
-            let icon = app
-                .default_window_icon()
-                .cloned()
-                .expect("missing default window icon");
+            // 菜单栏专用黑字透明底；macOS template 会随菜单栏自动着色。
+            let icon = Image::from_bytes(include_bytes!("../icons/tray-icon.png"))
+                .expect("failed to load tray template icon");
 
-            // 默认图标为彩色（avg_rgb ~145/196/134），template 模式下菜单栏几乎不可见。
             let _tray = TrayIconBuilder::new()
                 .icon(icon)
-                .icon_as_template(false)
+                .icon_as_template(true)
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .tooltip("Meterbar — 左键打开面板，右键打开菜单")
