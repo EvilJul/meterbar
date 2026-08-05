@@ -800,6 +800,18 @@ function renderFooter(state: PanelState): void {
   $("footer-updated").textContent = formatUpdated(latestFetchedAt(state));
 }
 
+let cardsReadyScheduled = false;
+function markCardsReady(): void {
+  if (cardsReadyScheduled || document.body.classList.contains("cards-ready")) {
+    return;
+  }
+  cardsReadyScheduled = true;
+  // 等首屏 card-appear（260ms + 最大 delay）播完再冻结，避免中途掐断
+  window.setTimeout(() => {
+    document.body.classList.add("cards-ready");
+  }, 420);
+}
+
 function renderPanel(state: PanelState): void {
   panelState = state;
   renderCursor(state);
@@ -810,6 +822,7 @@ function renderPanel(state: PanelState): void {
   renderFooter(state);
   applyBoardLayout(state);
   scheduleAutoRefresh(state);
+  markCardsReady();
   requestAnimationFrame(() => {
     syncPanelScrollFade?.();
     syncSettingsScrollFade?.();
@@ -1055,8 +1068,8 @@ function mergeVisibleIntoProviderOrder(
 
 function bindProviderDragSort(): void {
   const overview = $("panel-overview");
-  /** 略低于 6px，菜单栏窄面板里更容易启动拖拽 */
-  const DRAG_THRESHOLD_PX = 3;
+  /** 超过该位移才算拖动；过小会把点击误判为 drag，并触发视觉锁导致闪烁 */
+  const DRAG_THRESHOLD_PX = 6;
   const EDGE_SCROLL_PX = 28;
   const EDGE_SCROLL_STEP = 10;
   const FLIP_MS = 220;
@@ -1067,6 +1080,7 @@ function bindProviderDragSort(): void {
     pointerId: number;
     source: HTMLElement;
     sourceId: ProviderId;
+    startX: number;
     startY: number;
     started: boolean;
     settling: boolean;
@@ -1094,12 +1108,22 @@ function bindProviderDragSort(): void {
     }
   };
 
-  const setDragLock = (active: boolean) => {
+  /** 软锁：拦截 refresh / tray 失焦隐藏，但不改视觉 class（避免打断 card-appear）。 */
+  const setPointerGuard = (active: boolean) => {
     providerDragActive = active;
-    document.body.classList.toggle("provider-drag-active", active);
     void invoke("set_panel_drag_active", { active }).catch(() => {
       /* 旧后端无此命令时忽略 */
     });
+  };
+
+  /** 硬锁视觉：仅真实拖动开始后挂上，结束时摘掉。 */
+  const setDragVisualActive = (active: boolean) => {
+    document.body.classList.toggle("provider-drag-active", active);
+  };
+
+  const setDragLock = (active: boolean) => {
+    setPointerGuard(active);
+    setDragVisualActive(active);
   };
 
   const clearFlipStyles = (nodes: HTMLElement[]) => {
@@ -1284,8 +1308,9 @@ function bindProviderDragSort(): void {
     overview.classList.remove("provider-sorting");
 
     if (!started) {
+      // 纯点击：只解软锁，从未挂过视觉 class，不会重播入场动画
       drag = null;
-      setDragLock(false);
+      setPointerGuard(false);
       return;
     }
 
@@ -1388,12 +1413,16 @@ function bindProviderDragSort(): void {
 
   const onDocPointerMove = (e: PointerEvent) => {
     if (!drag || e.pointerId !== drag.pointerId || drag.settling) return;
+    const dx = Math.abs(e.clientX - drag.startX);
     const dy = Math.abs(e.clientY - drag.startY);
     if (!drag.started) {
-      if (dy < DRAG_THRESHOLD_PX) return;
+      if (dx < DRAG_THRESHOLD_PX && dy < DRAG_THRESHOLD_PX) return;
       drag.started = true;
+      // 真正进入拖拽才上视觉锁 / 禁选，避免纯点击触发 card-appear 重播闪烁
+      setDragVisualActive(true);
       overview.classList.add("provider-sorting");
       window.getSelection()?.removeAllRanges();
+      e.preventDefault();
       beginFloat(e.clientX, e.clientY);
     }
     e.preventDefault();
@@ -1430,16 +1459,13 @@ function bindProviderDragSort(): void {
     if (!isProviderId(sourceId)) return;
     if (visibleProviderNodes().length < 2) return;
 
-    // 阻止拖拽时选中文本（WebKit 仅靠 CSS 不够）
-    e.preventDefault();
-    window.getSelection()?.removeAllRanges();
-
-    // 尽早上锁，避免阈值前 refresh 重排 DOM，并抑制 tray 失焦 hide
-    setDragLock(true);
+    // 软锁：阈值前挡住 refresh / 失焦隐藏；视觉锁延后到真正开始拖动
+    setPointerGuard(true);
     drag = {
       pointerId: e.pointerId,
       source,
       sourceId,
+      startX: e.clientX,
       startY: e.clientY,
       started: false,
       settling: false,

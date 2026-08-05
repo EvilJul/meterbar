@@ -1316,6 +1316,11 @@ body {
   overscroll-behavior: contain;
 }
 
+/* 首屏入场结束后冻结 animation，避免 class 切换时 card-appear 重播闪一下 */
+body.cards-ready .card {
+  animation: none;
+}
+
 /* 拖拽锁期间禁止入场动画重放（含松手到 settings 写回完成） */
 .panel-body.provider-sorting .card,
 body.provider-drag-active .card {

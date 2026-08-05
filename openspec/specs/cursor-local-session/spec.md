@@ -27,3 +27,10 @@ The combined probe/token read SHALL preserve existing failure identifiers used b
 #### Scenario: Missing database still reports not found
 - **WHEN** no candidate `state.vscdb` path exists
 - **THEN** the probe result SHALL indicate database-not-found (or equivalent) and token read SHALL yield no token
+
+### Requirement: No persistence or logging of local access token
+The system MUST NOT write the local access token to Keychain/fallback files and MUST NOT log the token value.
+
+#### Scenario: Local session used successfully
+- **WHEN** usage is fetched via local access token
+- **THEN** the token SHALL only exist in memory for the request and SHALL NOT appear in logs or UI
