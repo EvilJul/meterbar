@@ -1047,6 +1047,35 @@ fn apply_accessory_activation_policy_early() {
     eprintln!("[meterbar] early NSApplicationActivationPolicyAccessory ok={ok}");
 }
 
+/// 清理旧版 LaunchAgent（指向 Contents/MacOS 裸二进制），避免登录项显示 exec/usages。
+/// 返回是否删除了至少一个 plist（调用方可迁移为 AppleScript 登录项）。
+#[cfg(target_os = "macos")]
+fn remove_legacy_autostart_launch_agents() -> bool {
+    let Ok(home) = std::env::var("HOME") else {
+        return false;
+    };
+    let agents = std::path::PathBuf::from(home).join("Library/LaunchAgents");
+    let mut removed = false;
+    for name in ["Meterbar.plist", "usages.plist"] {
+        let path = agents.join(name);
+        if path.is_file() {
+            match std::fs::remove_file(&path) {
+                Ok(()) => {
+                    eprintln!("[meterbar] removed legacy LaunchAgent {}", path.display());
+                    removed = true;
+                }
+                Err(e) => {
+                    eprintln!(
+                        "[meterbar] failed to remove legacy LaunchAgent {}: {e}",
+                        path.display()
+                    );
+                }
+            }
+        }
+    }
+    removed
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[cfg(target_os = "macos")]
@@ -1054,10 +1083,17 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_autostart::init(
-            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
-            None,
-        ))
+        // macOS：必须用 AppleScript 注册 .app bundle；LaunchAgent 会注册裸二进制，
+        // 导致「登录项 / 允许在后台」显示 exec 图标与可执行文件名（如 usages）。
+        .plugin({
+            let mut builder = tauri_plugin_autostart::Builder::new().app_name("Meterbar");
+            #[cfg(target_os = "macos")]
+            {
+                builder = builder
+                    .macos_launcher(tauri_plugin_autostart::MacosLauncher::AppleScript);
+            }
+            builder.build()
+        })
         .manage(AppState::default())
         .setup(|app| {
             #[cfg(target_os = "macos")]
@@ -1066,6 +1102,14 @@ pub fn run() {
                 let _ = app
                     .handle()
                     .set_activation_policy(tauri::ActivationPolicy::Accessory);
+
+                // 旧 LaunchAgent → 迁移为 AppleScript 登录项（显示 Meterbar.app 名称/图标）。
+                if remove_legacy_autostart_launch_agents() {
+                    use tauri_plugin_autostart::ManagerExt;
+                    if let Err(e) = app.autolaunch().enable() {
+                        eprintln!("[meterbar] migrate autostart to login item failed: {e}");
+                    }
+                }
             }
 
             let open = MenuItem::with_id(app, "open", "Open Panel", true, None::<&str>)?;
