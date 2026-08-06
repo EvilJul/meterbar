@@ -1,5 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import {
+  disable as disableAutostart,
+  enable as enableAutostart,
+  isEnabled as isAutostartEnabled,
+} from "@tauri-apps/plugin-autostart";
 
 type ProviderStatus =
   | "ok"
@@ -77,6 +82,7 @@ interface AppSettings {
   providerVisibility: ProviderVisibility;
   providerOrder: ProviderId[];
   showSystemSection: boolean;
+  showLatencySection: boolean;
 }
 
 interface LocalSessionProbe {
@@ -108,6 +114,7 @@ let currentSettings: AppSettings = {
   providerVisibility: { ...DEFAULT_VISIBILITY },
   providerOrder: [...DEFAULT_PROVIDER_ORDER],
   showSystemSection: true,
+  showLatencySection: true,
 };
 /** 主面板正在拖拽排序时为 true，避免 refresh 打断 DOM 顺序。 */
 let providerDragActive = false;
@@ -300,6 +307,11 @@ function normalizeSettings(raw: AppSettings): AppSettings {
     },
     providerOrder: normalizeProviderOrder(raw.providerOrder),
     showSystemSection: raw.showSystemSection !== false,
+    // 旧设置仅有 showSystemSection 时：Latency 与之同值；后端也会迁移。
+    showLatencySection:
+      raw.showLatencySection !== undefined
+        ? raw.showLatencySection !== false
+        : raw.showSystemSection !== false,
   };
 }
 
@@ -354,6 +366,7 @@ function applyBoardLayout(state: PanelState): void {
   const latencyCard = $("card-latency");
   const order = normalizeProviderOrder(currentSettings.providerOrder);
   const showSystem = currentSettings.showSystemSection !== false;
+  const showLatency = currentSettings.showLatencySection !== false;
 
   // 显隐：仅当结果相对上次变化时才改 class，避免 refresh 时先藏再显闪一下。
   for (const id of order) {
@@ -364,7 +377,7 @@ function applyBoardLayout(state: PanelState): void {
     setHiddenIfChanged(node, !show);
   }
   setHiddenIfChanged(systemCard, !showSystem);
-  setHiddenIfChanged(latencyCard, !showSystem);
+  setHiddenIfChanged(latencyCard, !showLatency);
 
   // 拖拽中不重排；排序仅在 order 或 System/Latency 相对位置变化时动手。
   if (!providerDragActive) {
@@ -991,6 +1004,60 @@ function isShowSystemOn(): boolean {
   );
 }
 
+function setShowLatencySwitch(on: boolean): void {
+  const el = $("show-latency-section") as HTMLButtonElement;
+  el.setAttribute("aria-checked", on ? "true" : "false");
+}
+
+function isShowLatencyOn(): boolean {
+  return (
+    ($("show-latency-section") as HTMLButtonElement).getAttribute(
+      "aria-checked",
+    ) === "true"
+  );
+}
+
+function setLaunchAtLoginSwitch(on: boolean): void {
+  const el = $("launch-at-login") as HTMLButtonElement;
+  el.setAttribute("aria-checked", on ? "true" : "false");
+}
+
+function isLaunchAtLoginOn(): boolean {
+  return (
+    ($("launch-at-login") as HTMLButtonElement).getAttribute("aria-checked") ===
+    "true"
+  );
+}
+
+function setLaunchAtLoginAvailable(available: boolean): void {
+  const field = document.getElementById("launch-at-login-field");
+  const el = document.getElementById(
+    "launch-at-login",
+  ) as HTMLButtonElement | null;
+  if (!field || !el) return;
+  field.hidden = !available;
+  el.disabled = !available;
+  el.setAttribute("aria-disabled", available ? "false" : "true");
+}
+
+async function syncLaunchAtLoginSwitch(): Promise<void> {
+  // 本应用仅面向 macOS；非 macOS 隐藏开关。
+  const isMac =
+    typeof navigator !== "undefined" &&
+    /Mac|iPhone|iPad|iPod/i.test(navigator.platform || navigator.userAgent);
+  if (!isMac) {
+    setLaunchAtLoginAvailable(false);
+    return;
+  }
+  setLaunchAtLoginAvailable(true);
+  try {
+    setLaunchAtLoginSwitch(await isAutostartEnabled());
+  } catch (err) {
+    console.warn("读取开机启动状态失败", err);
+    setLaunchAtLoginSwitch(false);
+  }
+}
+
 async function persistProviderVisibility(
   id: ProviderId,
   mode: VisibilityMode,
@@ -1510,7 +1577,9 @@ async function loadSettingsForm(): Promise<void> {
       settings.highLatencyMs,
     );
     setShowSystemSwitch(settings.showSystemSection !== false);
+    setShowLatencySwitch(settings.showLatencySection !== false);
     fillVisibilityControls(settings);
+    await syncLaunchAtLoginSwitch();
 
     const state =
       panelState ?? (await invoke<PanelState>("get_panel_state"));
@@ -1890,6 +1959,81 @@ function bindUi(): void {
     });
   }
 
+  {
+    const latSwitch = $("show-latency-section") as HTMLButtonElement;
+    const latRow = document.querySelector<HTMLElement>(
+      '[data-switch-for="show-latency-section"]',
+    );
+    const toggleLatency = () => {
+      void (async () => {
+        const msg = $("settings-msg");
+        const next = !isShowLatencyOn();
+        setShowLatencySwitch(next);
+        try {
+          await persistSettingsPatch({ showLatencySection: next });
+          msg.textContent = "网络延迟显示已保存";
+          msg.className = "settings-msg ok";
+        } catch (err) {
+          msg.textContent = `保存失败：${String(err)}`;
+          msg.className = "settings-msg error";
+          setShowLatencySwitch(currentSettings.showLatencySection !== false);
+        }
+      })();
+    };
+    latSwitch.addEventListener("click", (e) => {
+      e.stopPropagation();
+      toggleLatency();
+    });
+    latRow?.addEventListener("click", (e) => {
+      if ((e.target as HTMLElement).closest(".ios-switch")) return;
+      toggleLatency();
+    });
+  }
+
+  {
+    const loginSwitch = $("launch-at-login") as HTMLButtonElement;
+    const loginRow = document.querySelector<HTMLElement>(
+      '[data-switch-for="launch-at-login"]',
+    );
+    const toggleLaunchAtLogin = () => {
+      void (async () => {
+        if (loginSwitch.disabled) return;
+        const msg = $("settings-msg");
+        const next = !isLaunchAtLoginOn();
+        setLaunchAtLoginSwitch(next);
+        try {
+          if (next) {
+            await enableAutostart();
+          } else {
+            await disableAutostart();
+          }
+          // 以系统 Login Item 为准再同步一次
+          setLaunchAtLoginSwitch(await isAutostartEnabled());
+          msg.textContent = next
+            ? "已开启开机启动"
+            : "已关闭开机启动";
+          msg.className = "settings-msg ok";
+        } catch (err) {
+          msg.textContent = `开机启动设置失败：${String(err)}`;
+          msg.className = "settings-msg error";
+          try {
+            setLaunchAtLoginSwitch(await isAutostartEnabled());
+          } catch {
+            setLaunchAtLoginSwitch(!next);
+          }
+        }
+      })();
+    };
+    loginSwitch.addEventListener("click", (e) => {
+      e.stopPropagation();
+      toggleLaunchAtLogin();
+    });
+    loginRow?.addEventListener("click", (e) => {
+      if ((e.target as HTMLElement).closest(".ios-switch")) return;
+      toggleLaunchAtLogin();
+    });
+  }
+
   $("settings-form").addEventListener("submit", async (e) => {
     e.preventDefault();
     const msg = $("settings-msg");
@@ -1909,6 +2053,7 @@ function bindUi(): void {
       },
       providerOrder: normalizeProviderOrder(currentSettings.providerOrder),
       showSystemSection: isShowSystemOn(),
+      showLatencySection: isShowLatencyOn(),
     };
     try {
       await persistSettingsPatch(patch);

@@ -218,26 +218,17 @@ body {
 .toolbar-brand {
   display: flex;
   align-items: center;
-  gap: 10px;
   flex: 1;
   min-width: 0;
-}
-
-.brand-icon {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 34px;
-  height: 34px;
-  border-radius: 50%;
-  background: linear-gradient(145deg, #8b7ab8 0%, #6b5b95 100%);
-  box-shadow: 0 2px 10px rgba(107, 91, 149, 0.32);
-  flex-shrink: 0;
+  min-height: 28px;
 }
 
 .toolbar-leading {
+  display: flex;
+  align-items: center;
   flex: 1;
   min-width: 0;
+  min-height: 28px;
 }
 
 .toolbar-title {
@@ -246,14 +237,7 @@ body {
   font-weight: 700;
   letter-spacing: -0.02em;
   color: var(--text-primary);
-  line-height: 1.2;
-}
-
-.toolbar-subtitle {
-  margin: 2px 0 0;
-  font-size: 11px;
-  color: var(--text-secondary);
-  line-height: 1.3;
+  line-height: 1;
 }
 
 .toolbar-actions {
@@ -1216,6 +1200,22 @@ body {
 
 .ios-switch[aria-checked="true"]:active .ios-switch-thumb {
   transform: translateX(calc(var(--switch-w) - var(--thumb) - 6px));
+}
+
+.ios-switch:disabled,
+.ios-switch[aria-disabled="true"] {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.switch-row:has(.ios-switch:disabled),
+.switch-row:has(.ios-switch[aria-disabled="true"]) {
+  cursor: not-allowed;
+}
+
+.switch-row:has(.ios-switch:disabled):hover,
+.switch-row:has(.ios-switch[aria-disabled="true"]):hover {
+  background: transparent;
 }
 
 .switch-always-btn {

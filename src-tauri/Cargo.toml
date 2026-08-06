@@ -28,3 +28,4 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 sysinfo = "0.33"
 rusqlite = { version = "0.32", features = ["bundled"] }
 libc = "0.2"
+tauri-plugin-autostart = "2"

@@ -79,7 +79,7 @@ The settings view SHALL offer a board-visibility control (`auto` / `always` / `h
 
 ### Requirement: System metrics use a separate visibility switch
 
-The system SHALL persist `showSystemSection` (boolean, default `true`) in `AppSettings` / `settings.json`. When false, the board MUST hide both the System and Latency cards. System/Latency MUST NOT be treated as entries in model-provider ordering.
+The system SHALL persist `showSystemSection` and `showLatencySection` (booleans, default `true`) in `AppSettings` / `settings.json`. Each flag controls only its card. When loading a legacy file that has only `showSystemSection`, both fields MUST be set to that value. System/Latency MUST NOT be treated as entries in model-provider ordering.
 
 #### Scenario: Default shows system section
 
@@ -88,5 +88,10 @@ The system SHALL persist `showSystemSection` (boolean, default `true`) in `AppSe
 
 #### Scenario: User hides system section
 
-- **WHEN** `showSystemSection` is false
-- **THEN** both System and Latency cards MUST be hidden on the board
+- **WHEN** `showSystemSection` is false and `showLatencySection` is true
+- **THEN** System MUST be hidden and Latency MUST remain visible
+
+#### Scenario: User hides latency section
+
+- **WHEN** `showLatencySection` is false and `showSystemSection` is true
+- **THEN** Latency MUST be hidden and System MUST remain visible

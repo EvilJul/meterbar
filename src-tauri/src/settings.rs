@@ -85,6 +85,8 @@ struct SettingsFile {
     provider_order: Option<Vec<String>>,
     #[serde(default)]
     show_system_section: Option<bool>,
+    #[serde(default)]
+    show_latency_section: Option<bool>,
 }
 
 fn default_version() -> u32 {
@@ -104,11 +106,18 @@ impl SettingsFile {
             )),
             provider_order: Some(settings.provider_order.clone()),
             show_system_section: Some(settings.show_system_section),
+            show_latency_section: Some(settings.show_latency_section),
         }
     }
 
     fn into_app_settings(self) -> AppSettings {
         let defaults = AppSettings::default();
+        // 旧 settings.json 仅有 showSystemSection 时：两者同值；均缺省则为 true。
+        let legacy_system = self.show_system_section;
+        let show_system_section = legacy_system.unwrap_or(defaults.show_system_section);
+        let show_latency_section = self
+            .show_latency_section
+            .unwrap_or_else(|| legacy_system.unwrap_or(defaults.show_latency_section));
         AppSettings {
             cursor_refresh_sec: AppSettings::clamp_cursor_refresh_sec(
                 self.cursor_refresh_sec
@@ -135,9 +144,8 @@ impl SettingsFile {
                     .as_deref()
                     .unwrap_or(&defaults.provider_order),
             ),
-            show_system_section: self
-                .show_system_section
-                .unwrap_or(defaults.show_system_section),
+            show_system_section,
+            show_latency_section,
         }
     }
 }
@@ -254,6 +262,9 @@ pub fn apply_update(
     if let Some(show) = patch.show_system_section {
         current.show_system_section = show;
     }
+    if let Some(show) = patch.show_latency_section {
+        current.show_latency_section = show;
+    }
 
     match save(current) {
         Ok(()) => Ok(current.clone()),
@@ -308,6 +319,7 @@ mod tests {
             assert_eq!(loaded.provider_visibility, ProviderVisibility::default());
             assert_eq!(loaded.provider_order, AppSettings::default_provider_order());
             assert!(loaded.show_system_section);
+            assert!(loaded.show_latency_section);
             assert!(!path.exists(), "缺文件时不应写盘");
         });
     }
@@ -344,6 +356,7 @@ mod tests {
             assert_eq!(loaded.provider_visibility, ProviderVisibility::default());
             assert_eq!(loaded.provider_order, AppSettings::default_provider_order());
             assert!(loaded.show_system_section);
+            assert!(loaded.show_latency_section);
         });
     }
 
@@ -378,7 +391,36 @@ mod tests {
                     "deepseek".to_string()
                 ]
             );
+            // 旧字段：System / Latency 同值迁移
             assert!(!loaded.show_system_section);
+            assert!(!loaded.show_latency_section);
+        });
+    }
+
+    #[test]
+    fn load_migrates_legacy_show_system_section_to_both() {
+        with_temp_settings_path(|path| {
+            fs::write(path, r#"{"showSystemSection": false}"#).expect("write");
+            let loaded = load();
+            assert!(!loaded.show_system_section);
+            assert!(!loaded.show_latency_section);
+        });
+    }
+
+    #[test]
+    fn load_independent_system_and_latency_visibility() {
+        with_temp_settings_path(|path| {
+            fs::write(
+                path,
+                r#"{
+                  "showSystemSection": true,
+                  "showLatencySection": false
+                }"#,
+            )
+            .expect("write");
+            let loaded = load();
+            assert!(loaded.show_system_section);
+            assert!(!loaded.show_latency_section);
         });
     }
 
@@ -421,6 +463,7 @@ mod tests {
                     "codex".into(),
                 ],
                 show_system_section: false,
+                show_latency_section: true,
             };
             save(&original).expect("save");
             assert!(path.exists());
@@ -432,12 +475,14 @@ mod tests {
             assert_eq!(loaded.provider_visibility, original.provider_visibility);
             assert_eq!(loaded.provider_order, original.provider_order);
             assert!(!loaded.show_system_section);
+            assert!(loaded.show_latency_section);
 
             let raw = fs::read_to_string(path).expect("read raw");
             assert!(raw.contains("cursorRefreshSec"));
             assert!(raw.contains("providerVisibility"));
             assert!(raw.contains("providerOrder"));
             assert!(raw.contains("showSystemSection"));
+            assert!(raw.contains("showLatencySection"));
             assert!(!raw.to_lowercase().contains("token"));
             assert!(!raw.to_lowercase().contains("api_key"));
             assert!(!raw.to_lowercase().contains("apikey"));

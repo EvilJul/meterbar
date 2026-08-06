@@ -14,16 +14,7 @@
       <main class="panel view" id="view-main">
         <header class="toolbar">
           <div class="toolbar-brand">
-            <div class="brand-icon" aria-hidden="true">
-              <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-                <path d="M3 9.5c1.2-2.8 2.4-3.5 3.5-3.5s2.1.9 3 2.5c.9 1.6 1.8 2.5 3 2.5" stroke="#fff" stroke-width="1.5" stroke-linecap="round"/>
-                <path d="M3 12.5c1.5-1.2 2.8-1.8 4-1.8 1.4 0 2.5.8 3.5 2.2 1 1.4 2.1 2.1 3.5 2.1" stroke="#fff" stroke-width="1.5" stroke-linecap="round" opacity="0.75"/>
-              </svg>
-            </div>
-            <div class="toolbar-leading">
-              <h1 class="toolbar-title">Meterbar</h1>
-              <p class="toolbar-subtitle">菜单栏本地 AI 用量</p>
-            </div>
+            <h1 class="toolbar-title">Meterbar</h1>
           </div>
           <div class="toolbar-actions">
             <button type="button" class="toolbar-btn" id="btn-refresh" title="刷新" aria-label="刷新">
@@ -209,7 +200,6 @@
           </button>
           <div class="toolbar-leading">
             <h1 class="toolbar-title">Settings</h1>
-            <p class="toolbar-subtitle">凭证与刷新</p>
           </div>
         </header>
 
@@ -422,11 +412,29 @@
 
           <section class="settings-group" aria-labelledby="settings-general-title">
             <h2 class="settings-group-title" id="settings-general-title">General</h2>
+            <div class="field field-switch" id="launch-at-login-field">
+              <div class="switch-row" data-switch-for="launch-at-login">
+                <div class="switch-labels">
+                  <span class="field-label">开机启动 / Open at Login</span>
+                  <span class="field-hint">登录 macOS 时自动打开 Meterbar</span>
+                </div>
+                <button
+                  type="button"
+                  class="ios-switch"
+                  id="launch-at-login"
+                  role="switch"
+                  aria-checked="false"
+                  aria-label="开机启动"
+                >
+                  <span class="ios-switch-thumb" aria-hidden="true"></span>
+                </button>
+              </div>
+            </div>
             <div class="field field-switch">
               <div class="switch-row" data-switch-for="show-system-section">
                 <div class="switch-labels">
                   <span class="field-label">显示系统指标</span>
-                  <span class="field-hint">同时控制 System 与 Latency 卡片</span>
+                  <span class="field-hint">控制 System 卡片</span>
                 </div>
                 <button
                   type="button"
@@ -435,6 +443,24 @@
                   role="switch"
                   aria-checked="true"
                   aria-label="显示系统指标"
+                >
+                  <span class="ios-switch-thumb" aria-hidden="true"></span>
+                </button>
+              </div>
+            </div>
+            <div class="field field-switch">
+              <div class="switch-row" data-switch-for="show-latency-section">
+                <div class="switch-labels">
+                  <span class="field-label">显示网络延迟</span>
+                  <span class="field-hint">控制 Latency 卡片</span>
+                </div>
+                <button
+                  type="button"
+                  class="ios-switch"
+                  id="show-latency-section"
+                  role="switch"
+                  aria-checked="true"
+                  aria-label="显示网络延迟"
                 >
                   <span class="ios-switch-thumb" aria-hidden="true"></span>
                 </button>

@@ -89,7 +89,7 @@ DeepSeek 现有隐藏逻辑并入统一公式，删除「特殊分支」重复�
 
 - **选择**：
   - `providerOrder` **仅**含模型供应商：`cursor` | `codex` | `deepseek`
-  - 新增 `showSystemSection: bool`，默认 `true`
+  - 新增 `showSystemSection` / `showLatencySection: bool`，默认均 `true`（旧文件仅有前者时两者同值）
   - 为真时显示 `card-system` + `card-latency`（二者作为系统区块一起显隐；不拆两个排序位）
   - 系统区块在 DOM 上固定位于**模型供应商列表之后**（或之前——**选定：模型卡片按 `providerOrder` 排列，System/Latency 固定在模型列表下方**，与现网布局一致）
 - **理由**：系统指标不依赖登录；纳入排序会干扰「供应商」心智，且 Latency 依赖 General 设置而非供应商凭证。

@@ -168,8 +168,10 @@ pub struct AppSettings {
     pub provider_visibility: ProviderVisibility,
     /// 模型供应商看板顺序；仅含 cursor/codex/deepseek。
     pub provider_order: Vec<String>,
-    /// 是否显示 System + Latency；默认 true。
+    /// 是否显示 System 卡片；默认 true。
     pub show_system_section: bool,
+    /// 是否显示 Latency 卡片；默认 true。
+    pub show_latency_section: bool,
 }
 
 impl Default for AppSettings {
@@ -182,6 +184,7 @@ impl Default for AppSettings {
             provider_visibility: ProviderVisibility::default(),
             provider_order: Self::default_provider_order(),
             show_system_section: true,
+            show_latency_section: true,
         }
     }
 }
@@ -286,4 +289,5 @@ pub struct AppSettingsUpdate {
     pub provider_visibility: Option<ProviderVisibility>,
     pub provider_order: Option<Vec<String>>,
     pub show_system_section: Option<bool>,
+    pub show_latency_section: Option<bool>,
 }

@@ -14,13 +14,13 @@
 - [x] 3.1 实现 `shouldShowProvider(mode, configured)`：`hidden` 永不显示；`always` 显示；`auto` 仅 configured 显示
 - [x] 3.2 用统一规则替换 DeepSeek 特殊隐藏逻辑；Cursor/Codex 在 `auto` 且未配置时默认隐藏
 - [x] 3.3 按 `providerOrder` DOM 重排模型卡片；隐藏项跳过且保持相对顺序；System/Latency 固定在模型列表下方
-- [x] 3.4 按 `showSystemSection` 同时显隐 System 与 Latency 卡片
+- [x] 3.4 按 `showSystemSection` / `showLatencySection` 分别显隐 System 与 Latency 卡片（旧 settings 仅有前者时两者同值迁移）
 
 ## 4. 设置页 UI
 
 - [x] 4.1 为 Cursor / Codex / DeepSeek 设置组增加看板显示三态控件（自动 / 始终显示 / 隐藏），保存走 `update_settings`
 - [x] 4.2 增加看板排序区（上移/下移），变更持久化到 `providerOrder`
-- [x] 4.3 增加「显示系统指标」开关绑定 `showSystemSection`；设置页供应商配置区在卡片隐藏时仍可见
+- [x] 4.3 增加「显示系统指标」「显示网络延迟」开关分别绑定 `showSystemSection` / `showLatencySection`；设置页供应商配置区在卡片隐藏时仍可见
 
 ## 5. 验收
 
