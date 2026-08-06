@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>03 · 胶囊工具条 — Meterbar</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,450;9..40,550;9..40,650&family=IBM+Plex+Mono:wght@500&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #e9ecf1;
+      --panel: #ffffff;
+      --ink: #14171c;
+      --mute: #5a6270;
+      --faint: #8b93a1;
+      --chip: #f0f2f6;
+      --track: #e2e6ed;
+      --fill: #2f6fed;
+      --danger: #c94438;
+      --w: 340px;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      background:
+        radial-gradient(circle at 30% 20%, #f5f7fb 0%, var(--bg) 55%);
+      font-family: "DM Sans", "PingFang SC", sans-serif;
+      color: var(--ink);
+      -webkit-font-smoothing: antialiased;
+    }
+    .scene-label {
+      position: fixed; top: 22px; left: 26px;
+      font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
+      color: var(--faint);
+    }
+    html.embed .scene-label { display: none; }
+    html.embed body { min-height: auto; padding: 20px 0; }
+
+    .panel {
+      width: var(--w);
+      background: var(--panel);
+      border-radius: 18px;
+      border: 1px solid rgba(20,23,28,0.08);
+      box-shadow: 0 12px 32px rgba(20,30,50,0.1);
+      padding: 12px;
+    }
+    .top {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 10px; padding: 0 2px;
+    }
+    .brand { font-size: 12px; font-weight: 650; letter-spacing: -0.01em; }
+    .pill-btns { display: flex; gap: 4px; }
+    .pill-btns button {
+      height: 22px; padding: 0 8px; border: 0; border-radius: 999px;
+      background: var(--chip); color: var(--mute); font-size: 10px; font-weight: 550;
+      font-family: inherit;
+    }
+
+    .block {
+      background: var(--chip);
+      border-radius: 12px;
+      padding: 10px 11px;
+      margin-bottom: 8px;
+    }
+    .block-h {
+      display: flex; justify-content: space-between; align-items: baseline;
+      margin-bottom: 4px;
+    }
+    .name { font-size: 12px; font-weight: 550; color: var(--mute); }
+    .pct {
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 20px; font-weight: 500; letter-spacing: -0.03em;
+    }
+    .sub {
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 11px; color: var(--faint); margin-bottom: 7px;
+    }
+    .track {
+      height: 4px; border-radius: 999px; background: #d8dde7; overflow: hidden;
+    }
+    .track > i {
+      display: block; height: 100%; border-radius: 999px; background: var(--fill);
+    }
+
+    .compact {
+      display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px;
+    }
+    .cap-row {
+      display: grid; grid-template-columns: 72px 1fr auto;
+      gap: 8px; align-items: center;
+      background: var(--chip); border-radius: 10px; padding: 8px 10px;
+    }
+    .cap-row.balance { grid-template-columns: 72px 1fr; }
+    .cap-name { font-size: 12px; font-weight: 550; color: var(--mute); }
+    .cap-val {
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 12px; font-weight: 500;
+    }
+    .cap-track {
+      height: 3px; border-radius: 999px; background: #d8dde7; overflow: hidden;
+    }
+    .cap-track > i {
+      display: block; height: 100%; border-radius: 999px;
+      background: #6b8fd4;
+    }
+    .balance-note {
+      font-size: 10px; color: var(--faint); grid-column: 2;
+      margin-top: -2px;
+    }
+
+    .sys {
+      border: 1px solid rgba(20,23,28,0.07);
+      border-radius: 12px;
+      padding: 8px 10px 10px;
+    }
+    .sys-h {
+      font-size: 10px; font-weight: 650; letter-spacing: 0.08em;
+      text-transform: uppercase; color: var(--faint); margin-bottom: 6px;
+    }
+    .m {
+      display: grid; grid-template-columns: 36px 1fr auto;
+      gap: 8px; align-items: center; padding: 4px 0;
+    }
+    .ml { font-size: 11px; font-weight: 550; color: var(--mute); }
+    .mv {
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 11px; font-weight: 500;
+    }
+    .mv.warn { color: var(--danger); }
+    .mt {
+      height: 3px; border-radius: 999px; background: var(--track); overflow: hidden;
+    }
+    .mt > i {
+      display: block; height: 100%; border-radius: 999px; background: #9aa5b8;
+    }
+    .mt > i.warn { background: var(--danger); }
+    .hint {
+      font-size: 9px; color: var(--faint); text-align: right;
+      grid-column: 2 / -1; margin-top: -2px; margin-bottom: 2px;
+    }
+    .lat {
+      display: flex; justify-content: space-between; align-items: center;
+      margin-top: 4px; padding: 6px 8px;
+      background: var(--chip); border-radius: 8px;
+      font-size: 11px;
+    }
+    .lat .mv { font-size: 12px; }
+    .net {
+      display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px;
+    }
+    .tag {
+      font-size: 10px; color: var(--mute);
+      background: var(--chip); border-radius: 999px;
+      padding: 4px 8px;
+      font-variant-numeric: tabular-nums;
+    }
+    .tag b { font-weight: 550; color: var(--faint); margin-right: 4px; }
+  </style>
+</head>
+<body>
+  <div class="scene-label">03 · Utility Capsule</div>
+  <div class="panel" role="dialog" aria-label="Meterbar">
+    <div class="top">
+      <div class="brand">Meterbar</div>
+      <div class="pill-btns">
+        <button type="button">刷新</button>
+        <button type="button">设置</button>
+      </div>
+    </div>
+
+    <div class="block">
+      <div class="block-h">
+        <span class="name">Cursor</span>
+        <span class="pct">63%</span>
+      </div>
+      <div class="sub">$70 / $70 · 本周期</div>
+      <div class="track"><i style="width:63%"></i></div>
+    </div>
+
+    <div class="compact">
+      <div class="cap-row">
+        <span class="cap-name">Codex</span>
+        <div class="cap-track"><i style="width:26%"></i></div>
+        <span class="cap-val">26%</span>
+      </div>
+      <div class="cap-row balance">
+        <span class="cap-name">DeepSeek</span>
+        <span class="cap-val">¥42.44</span>
+        <span class="balance-note">余额 · 无进度条</span>
+      </div>
+    </div>
+
+    <section class="sys">
+      <div class="sys-h">System</div>
+      <div class="m">
+        <span class="ml">CPU</span>
+        <div class="mt"><i style="width:20%"></i></div>
+        <span class="mv">20%</span>
+      </div>
+      <div class="m">
+        <span class="ml">GPU</span>
+        <div class="mt"><i class="warn" style="width:100%"></i></div>
+        <span class="mv warn">100%</span>
+      </div>
+      <div class="m">
+        <span class="ml">MEM</span>
+        <div class="mt"><i style="width:47.6%"></i></div>
+        <span class="mv">40.0 / 44.0 GB</span>
+      </div>
+      <div class="hint">已用 / 剩余</div>
+      <div class="m">
+        <span class="ml">DISK</span>
+        <div class="mt"><i style="width:33.9%"></i></div>
+        <span class="mv">629 / 1229 GB</span>
+      </div>
+      <div class="hint">已用 / 剩余</div>
+      <div class="lat">
+        <span class="ml">Latency</span>
+        <span class="mv">605 ms</span>
+      </div>
+      <div class="net">
+        <span class="tag"><b>VPN</b>—</span>
+        <span class="tag"><b>IP</b>119.236.5.8</span>
+        <span class="tag"><b>Region</b>Hong Kong</span>
+      </div>
+    </section>
+  </div>
+<script>if(location.hash==="#embed"||window.self!==window.top)document.documentElement.classList.add("embed");</script>
+</body>
+</html>

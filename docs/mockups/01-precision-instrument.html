@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>01 · 精密仪表 — Meterbar</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@450;500&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --desk: #12141a;
+      --panel: #1a1d26;
+      --ink: #e8eaf0;
+      --mute: #8b91a1;
+      --faint: #5c6375;
+      --line: rgba(255,255,255,0.07);
+      --track: rgba(255,255,255,0.1);
+      --fill: #d4c4a0;
+      --danger: #d4786a;
+      --w: 352px;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      background:
+        radial-gradient(ellipse 70% 40% at 50% 0%, #1e2230 0%, var(--desk) 60%),
+        var(--desk);
+      font-family: "IBM Plex Sans", "PingFang SC", sans-serif;
+      color: var(--ink);
+      -webkit-font-smoothing: antialiased;
+    }
+    .scene-label {
+      position: fixed; top: 22px; left: 26px;
+      font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
+      color: var(--faint);
+    }
+    html.embed .scene-label { display: none; }
+    html.embed body { min-height: auto; padding: 20px 0; }
+
+    .panel {
+      width: var(--w);
+      background: var(--panel);
+      border-radius: 14px;
+      border: 1px solid rgba(255,255,255,0.08);
+      box-shadow: 0 20px 50px rgba(0,0,0,0.45);
+      overflow: hidden;
+    }
+    .bar {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 11px 14px 6px;
+    }
+    .brand {
+      font-size: 12px; font-weight: 600; letter-spacing: 0.02em;
+      color: var(--mute);
+    }
+    .icons { display: flex; gap: 4px; }
+    .ico {
+      width: 24px; height: 24px; border-radius: 6px;
+      background: rgba(255,255,255,0.04); border: 0;
+      color: var(--faint); font-size: 12px;
+      display: grid; place-items: center;
+    }
+
+    .hero {
+      padding: 8px 16px 16px;
+      border-bottom: 1px solid var(--line);
+    }
+    .hero-top {
+      display: flex; justify-content: space-between; align-items: baseline;
+      margin-bottom: 2px;
+    }
+    .hero-name { font-size: 12px; font-weight: 500; color: var(--mute); }
+    .hero-period { font-size: 11px; color: var(--faint); }
+    .hero-num {
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 44px; font-weight: 500; letter-spacing: -0.04em;
+      line-height: 1; margin: 4px 0 2px;
+    }
+    .hero-num small {
+      font-size: 18px; font-weight: 450; color: var(--mute); margin-left: 1px;
+    }
+    .hero-meta {
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 11px; color: var(--faint); margin-bottom: 12px;
+    }
+    .bar-track {
+      height: 2px; background: var(--track); border-radius: 1px; overflow: hidden;
+    }
+    .bar-track > i {
+      display: block; height: 100%; background: var(--fill); border-radius: 1px;
+    }
+
+    .providers { padding: 4px 16px; }
+    .row {
+      display: grid;
+      grid-template-columns: 64px 1fr auto;
+      gap: 10px; align-items: center;
+      padding: 10px 0;
+      border-bottom: 1px solid var(--line);
+    }
+    .row:last-child { border-bottom: 0; }
+    .pname { font-size: 12px; color: var(--mute); }
+    .pval {
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 12px; font-weight: 500; color: var(--ink);
+      text-align: right; min-width: 52px;
+    }
+    .mini-track {
+      height: 2px; background: var(--track); border-radius: 1px; overflow: hidden;
+    }
+    .mini-track > i { display: block; height: 100%; background: rgba(212,196,160,0.55); }
+    .row.balance { grid-template-columns: 64px 1fr; }
+    .row.balance .pval { color: var(--ink); }
+    .balance-hint {
+      grid-column: 2; font-size: 10px; color: var(--faint); margin-top: -6px; padding-bottom: 4px;
+    }
+
+    .sys {
+      padding: 12px 16px 14px;
+      background: rgba(0,0,0,0.18);
+    }
+    .sys-h {
+      font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase;
+      color: var(--faint); margin-bottom: 8px;
+    }
+    .metric {
+      display: grid;
+      grid-template-columns: 48px 1fr auto;
+      gap: 8px; align-items: center;
+      padding: 5px 0;
+      font-size: 12px;
+    }
+    .ml { color: var(--mute); }
+    .mv {
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 11px; color: var(--ink); text-align: right;
+    }
+    .mv.warn { color: var(--danger); }
+    .mtrack {
+      height: 2px; background: var(--track); border-radius: 1px; overflow: hidden;
+    }
+    .mtrack > i { display: block; height: 100%; background: rgba(255,255,255,0.28); }
+    .mtrack > i.warn { background: var(--danger); }
+    .latency {
+      display: flex; justify-content: space-between; align-items: baseline;
+      padding: 8px 0 4px; margin-top: 4px;
+      border-top: 1px solid var(--line);
+      font-size: 12px;
+    }
+    .latency .mv { font-size: 12px; }
+    .net {
+      display: grid; gap: 3px; margin-top: 8px; padding-top: 8px;
+      border-top: 1px solid var(--line);
+      font-size: 11px; color: var(--faint);
+    }
+    .net div { display: flex; justify-content: space-between; gap: 12px; }
+    .net span:last-child {
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      color: var(--mute);
+    }
+  </style>
+</head>
+<body>
+  <div class="scene-label">01 · Precision Instrument</div>
+  <div class="panel" role="dialog" aria-label="Meterbar">
+    <div class="bar">
+      <div class="brand">Meterbar</div>
+      <div class="icons">
+        <button class="ico" aria-label="刷新">↻</button>
+        <button class="ico" aria-label="设置">⚙</button>
+      </div>
+    </div>
+
+    <section class="hero">
+      <div class="hero-top">
+        <span class="hero-name">Cursor</span>
+        <span class="hero-period">本周期</span>
+      </div>
+      <div class="hero-num">63<small>%</small></div>
+      <div class="hero-meta">$70 / $70</div>
+      <div class="bar-track"><i style="width:63%"></i></div>
+    </section>
+
+    <section class="providers">
+      <div class="row">
+        <span class="pname">Codex</span>
+        <div class="mini-track"><i style="width:26%"></i></div>
+        <span class="pval">26%</span>
+      </div>
+      <div class="row balance">
+        <span class="pname">DeepSeek</span>
+        <span class="pval">¥42.44</span>
+      </div>
+      <div class="balance-hint">余额 · 无用量进度</div>
+    </section>
+
+    <section class="sys">
+      <div class="sys-h">System</div>
+      <div class="metric">
+        <span class="ml">CPU</span>
+        <div class="mtrack"><i style="width:20%"></i></div>
+        <span class="mv">20%</span>
+      </div>
+      <div class="metric">
+        <span class="ml">GPU</span>
+        <div class="mtrack"><i class="warn" style="width:100%"></i></div>
+        <span class="mv warn">100%</span>
+      </div>
+      <div class="metric">
+        <span class="ml">MEM</span>
+        <div class="mtrack"><i style="width:47.6%"></i></div>
+        <span class="mv">40.0 / 44.0 GB</span>
+      </div>
+      <div class="metric" style="grid-template-columns: 48px 1fr;">
+        <span class="ml"></span>
+        <span style="font-size:10px;color:var(--faint);text-align:right">已用 / 剩余</span>
+      </div>
+      <div class="metric">
+        <span class="ml">DISK</span>
+        <div class="mtrack"><i style="width:33.9%"></i></div>
+        <span class="mv">629 / 1229 GB</span>
+      </div>
+      <div class="metric" style="grid-template-columns: 48px 1fr;">
+        <span class="ml"></span>
+        <span style="font-size:10px;color:var(--faint);text-align:right">已用 / 剩余</span>
+      </div>
+      <div class="latency">
+        <span class="ml">Latency</span>
+        <span class="mv">605 ms</span>
+      </div>
+      <div class="net">
+        <div><span>VPN</span><span>—</span></div>
+        <div><span>Public IP</span><span>119.236.5.8</span></div>
+        <div><span>Region</span><span>Hong Kong</span></div>
+      </div>
+    </section>
+  </div>
+<script>if(location.hash==="#embed"||window.self!==window.top)document.documentElement.classList.add("embed");</script>
+</body>
+</html>

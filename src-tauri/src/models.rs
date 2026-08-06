@@ -73,6 +73,15 @@ pub struct SystemSnapshot {
     pub gpu_temp_c: Option<f64>,
     pub mem_used_bytes: u64,
     pub mem_total_bytes: u64,
+    /// 启动盘已用字节（total − 实际剩余）；采集失败时为 `None`。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disk_used_bytes: Option<u64>,
+    /// 启动盘实际剩余字节（statfs 可用空间，不含可清除虚高）；采集失败时为 `None`。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disk_available_bytes: Option<u64>,
+    /// 本机 VPN/隧道网卡 IPv4（如 utun）；未连接时为 `None`。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vpn_ip: Option<String>,
     pub fetched_at: String,
 }
 

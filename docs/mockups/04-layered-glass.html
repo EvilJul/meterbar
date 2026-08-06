@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>04 · 玻璃分层 — Meterbar</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600&family=JetBrains+Mono:wght@450;500&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --ink: #f2f5fa;
+      --mute: rgba(242,245,250,0.62);
+      --faint: rgba(242,245,250,0.38);
+      --glass: rgba(255,255,255,0.07);
+      --glass-2: rgba(255,255,255,0.045);
+      --line: rgba(255,255,255,0.1);
+      --fill: #7ec8c0;
+      --danger: #ef8b7a;
+      --w: 356px;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      background:
+        radial-gradient(ellipse 90% 60% at 20% 10%, #2a3a4a 0%, transparent 50%),
+        radial-gradient(ellipse 70% 50% at 90% 80%, #1a2838 0%, transparent 45%),
+        linear-gradient(165deg, #121820 0%, #0c1016 100%);
+      font-family: "Sora", "PingFang SC", sans-serif;
+      color: var(--ink);
+      -webkit-font-smoothing: antialiased;
+    }
+    .scene-label {
+      position: fixed; top: 22px; left: 26px;
+      font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
+      color: var(--faint);
+    }
+    html.embed .scene-label { display: none; }
+    html.embed body { min-height: auto; padding: 20px 0; }
+
+    .panel {
+      width: var(--w);
+      border-radius: 20px;
+      padding: 12px;
+      background: rgba(18, 24, 32, 0.55);
+      border: 1px solid rgba(255,255,255,0.1);
+      box-shadow:
+        0 24px 60px rgba(0,0,0,0.4),
+        inset 0 1px 0 rgba(255,255,255,0.08);
+      backdrop-filter: blur(40px) saturate(1.35);
+      -webkit-backdrop-filter: blur(40px) saturate(1.35);
+    }
+    .bar {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 4px 6px 10px;
+    }
+    .brand {
+      font-size: 12px; font-weight: 600; letter-spacing: 0.04em;
+      color: var(--mute);
+    }
+    .actions { display: flex; gap: 6px; }
+    .actions span {
+      width: 28px; height: 28px; border-radius: 50%;
+      background: var(--glass); border: 1px solid var(--line);
+      display: grid; place-items: center;
+      font-size: 12px; color: var(--mute);
+    }
+
+    .layer {
+      background: var(--glass);
+      border-radius: 14px;
+      padding: 12px 13px;
+      margin-bottom: 8px;
+      border: 1px solid transparent;
+    }
+    .layer.soft {
+      background: var(--glass-2);
+    }
+    .layer-h {
+      display: flex; justify-content: space-between; align-items: baseline;
+    }
+    .lname { font-size: 11px; font-weight: 500; color: var(--mute); letter-spacing: 0.02em; }
+    .lperiod { font-size: 10px; color: var(--faint); }
+    .big {
+      font-family: "JetBrains Mono", ui-monospace, monospace;
+      font-size: 36px; font-weight: 500; letter-spacing: -0.04em;
+      line-height: 1.05; margin: 6px 0 2px;
+    }
+    .big small { font-size: 16px; color: var(--mute); }
+    .meta {
+      font-family: "JetBrains Mono", ui-monospace, monospace;
+      font-size: 11px; color: var(--faint); margin-bottom: 10px;
+    }
+    .glow-track {
+      height: 3px; border-radius: 999px;
+      background: rgba(255,255,255,0.1); overflow: hidden;
+    }
+    .glow-track > i {
+      display: block; height: 100%; border-radius: 999px;
+      background: var(--fill);
+      box-shadow: 0 0 10px rgba(126,200,192,0.35);
+    }
+
+    .stack { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
+    .row {
+      display: grid; grid-template-columns: 70px 1fr auto;
+      gap: 10px; align-items: center;
+      padding: 9px 12px;
+      background: var(--glass-2);
+      border-radius: 12px;
+    }
+    .row.balance { grid-template-columns: 70px 1fr; }
+    .rname { font-size: 12px; color: var(--mute); font-weight: 500; }
+    .rval {
+      font-family: "JetBrains Mono", ui-monospace, monospace;
+      font-size: 12px; font-weight: 500;
+    }
+    .rtrack {
+      height: 2px; border-radius: 999px;
+      background: rgba(255,255,255,0.1); overflow: hidden;
+    }
+    .rtrack > i {
+      display: block; height: 100%; background: rgba(126,200,192,0.65);
+      border-radius: 999px;
+    }
+    .rnote {
+      grid-column: 2; font-size: 10px; color: var(--faint); margin-top: -4px;
+    }
+
+    .sys-layer { padding: 11px 12px 12px; }
+    .sys-h {
+      font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase;
+      color: var(--faint); margin-bottom: 8px; font-weight: 500;
+    }
+    .m {
+      display: grid; grid-template-columns: 42px 1fr auto;
+      gap: 8px; align-items: center; padding: 4px 0;
+    }
+    .ml { font-size: 11px; color: var(--mute); }
+    .mv {
+      font-family: "JetBrains Mono", ui-monospace, monospace;
+      font-size: 11px;
+    }
+    .mv.warn { color: var(--danger); }
+    .mt {
+      height: 2px; border-radius: 999px;
+      background: rgba(255,255,255,0.1); overflow: hidden;
+    }
+    .mt > i {
+      display: block; height: 100%; background: rgba(255,255,255,0.35);
+      border-radius: 999px;
+    }
+    .mt > i.warn {
+      background: var(--danger);
+      box-shadow: 0 0 8px rgba(239,139,122,0.4);
+    }
+    .hint {
+      font-size: 9px; color: var(--faint); text-align: right;
+      grid-column: 2 / -1; margin-top: -2px;
+    }
+    .lat {
+      display: flex; justify-content: space-between; align-items: center;
+      margin: 8px 0 0;
+      padding: 8px 10px;
+      background: rgba(0,0,0,0.18);
+      border-radius: 10px;
+      font-size: 12px;
+    }
+    .lat .mv { font-size: 13px; }
+    .net {
+      margin-top: 10px; display: grid; gap: 4px;
+      font-size: 11px; color: var(--faint);
+    }
+    .net div { display: flex; justify-content: space-between; }
+    .net span:last-child {
+      font-family: "JetBrains Mono", ui-monospace, monospace;
+      color: var(--mute);
+    }
+  </style>
+</head>
+<body>
+  <div class="scene-label">04 · Layered Glass</div>
+  <div class="panel" role="dialog" aria-label="Meterbar">
+    <div class="bar">
+      <div class="brand">Meterbar</div>
+      <div class="actions"><span>↻</span><span>⚙</span></div>
+    </div>
+
+    <section class="layer">
+      <div class="layer-h">
+        <span class="lname">Cursor</span>
+        <span class="lperiod">本周期</span>
+      </div>
+      <div class="big">63<small>%</small></div>
+      <div class="meta">$70 / $70</div>
+      <div class="glow-track"><i style="width:63%"></i></div>
+    </section>
+
+    <div class="stack">
+      <div class="row">
+        <span class="rname">Codex</span>
+        <div class="rtrack"><i style="width:26%"></i></div>
+        <span class="rval">26%</span>
+      </div>
+      <div class="row balance">
+        <span class="rname">DeepSeek</span>
+        <span class="rval">¥42.44</span>
+        <span class="rnote">余额 · 无进度条</span>
+      </div>
+    </div>
+
+    <section class="layer soft sys-layer">
+      <div class="sys-h">System</div>
+      <div class="m">
+        <span class="ml">CPU</span>
+        <div class="mt"><i style="width:20%"></i></div>
+        <span class="mv">20%</span>
+      </div>
+      <div class="m">
+        <span class="ml">GPU</span>
+        <div class="mt"><i class="warn" style="width:100%"></i></div>
+        <span class="mv warn">100%</span>
+      </div>
+      <div class="m">
+        <span class="ml">MEM</span>
+        <div class="mt"><i style="width:47.6%"></i></div>
+        <span class="mv">40.0 / 44.0 GB</span>
+      </div>
+      <div class="hint">已用 / 剩余</div>
+      <div class="m">
+        <span class="ml">DISK</span>
+        <div class="mt"><i style="width:33.9%"></i></div>
+        <span class="mv">629 / 1229 GB</span>
+      </div>
+      <div class="hint">已用 / 剩余</div>
+      <div class="lat">
+        <span class="ml">Latency</span>
+        <span class="mv">605 ms</span>
+      </div>
+      <div class="net">
+        <div><span>VPN</span><span>—</span></div>
+        <div><span>Public IP</span><span>119.236.5.8</span></div>
+        <div><span>Region</span><span>Hong Kong</span></div>
+      </div>
+    </section>
+  </div>
+<script>if(location.hash==="#embed"||window.self!==window.top)document.documentElement.classList.add("embed");</script>
+</body>
+</html>

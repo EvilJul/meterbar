@@ -17,7 +17,7 @@
         "label": "main",
         "title": "Meterbar",
         "width": 360,
-        "height": 480,
+        "height": 320,
         "resizable": false,
         "decorations": false,
         "visible": false,

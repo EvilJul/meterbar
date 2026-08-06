@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>05 · 数据终端 — Meterbar</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #0e1110;
+      --panel: #141816;
+      --ink: #c8d0c6;
+      --bright: #e6eee2;
+      --mute: #7a8578;
+      --faint: #525a50;
+      --line: #2a322c;
+      --fill: #8fa88a;
+      --danger: #c97a6a;
+      --w: 348px;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      background:
+        repeating-linear-gradient(
+          0deg,
+          transparent,
+          transparent 2px,
+          rgba(0,0,0,0.12) 2px,
+          rgba(0,0,0,0.12) 3px
+        ),
+        radial-gradient(ellipse 60% 40% at 50% 0%, #1a201c 0%, var(--bg) 70%);
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      color: var(--ink);
+      -webkit-font-smoothing: antialiased;
+      font-size: 12px;
+    }
+    .scene-label {
+      position: fixed; top: 22px; left: 26px;
+      font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase;
+      color: var(--faint); font-family: "IBM Plex Mono", monospace;
+    }
+    html.embed .scene-label { display: none; }
+    html.embed body { min-height: auto; padding: 20px 0; }
+
+    .panel {
+      width: var(--w);
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      box-shadow: 0 16px 40px rgba(0,0,0,0.5);
+      padding: 12px 14px 14px;
+    }
+    .hdr {
+      display: flex; justify-content: space-between; align-items: center;
+      padding-bottom: 8px;
+      border-bottom: 1px solid var(--line);
+      margin-bottom: 10px;
+    }
+    .brand {
+      font-size: 11px; font-weight: 600; letter-spacing: 0.12em;
+      text-transform: uppercase; color: var(--bright);
+    }
+    .cmds { color: var(--faint); font-size: 10px; letter-spacing: 0.04em; }
+
+    .sec { margin-bottom: 12px; }
+    .sec-label {
+      font-size: 10px; color: var(--faint); letter-spacing: 0.08em;
+      margin-bottom: 6px;
+    }
+    .sec-label::before { content: "// "; color: var(--line); }
+
+    .primary {
+      display: grid; grid-template-columns: 1fr auto;
+      gap: 2px 12px; align-items: end;
+    }
+    .pname { color: var(--mute); font-size: 11px; }
+    .pnum {
+      grid-row: span 2; font-size: 32px; font-weight: 500;
+      letter-spacing: -0.03em; color: var(--bright); line-height: 1;
+      align-self: center;
+    }
+    .pnum small { font-size: 14px; color: var(--mute); font-weight: 400; }
+    .pmeta { color: var(--mute); font-size: 11px; }
+    .hbar {
+      grid-column: 1 / -1; margin-top: 8px;
+      height: 1px; background: var(--line); position: relative;
+    }
+    .hbar > i {
+      position: absolute; left: 0; top: 0; height: 1px;
+      background: var(--fill);
+    }
+
+    .kv {
+      display: grid; grid-template-columns: 88px 1fr auto;
+      gap: 6px 8px; align-items: center;
+      padding: 5px 0;
+      border-bottom: 1px solid rgba(42,50,44,0.7);
+    }
+    .kv:last-child { border-bottom: 0; }
+    .k { color: var(--mute); }
+    .v { color: var(--bright); text-align: right; font-weight: 500; }
+    .t {
+      height: 1px; background: var(--line); position: relative;
+    }
+    .t > i {
+      position: absolute; left: 0; top: 0; height: 1px; background: var(--fill);
+      opacity: 0.75;
+    }
+    .kv.balance { grid-template-columns: 88px 1fr; }
+    .note {
+      grid-column: 2; color: var(--faint); font-size: 10px; margin-top: -2px;
+    }
+
+    .sys-grid { display: grid; gap: 0; }
+    .sr {
+      display: grid; grid-template-columns: 52px 1fr auto;
+      gap: 8px; align-items: center;
+      padding: 4px 0;
+      border-bottom: 1px dashed rgba(42,50,44,0.8);
+    }
+    .sr .k { font-size: 11px; }
+    .sr .v { font-size: 11px; }
+    .sr .v.warn { color: var(--danger); }
+    .st {
+      height: 1px; background: var(--line); position: relative;
+    }
+    .st > i {
+      position: absolute; left: 0; top: 0; height: 1px;
+      background: var(--mute);
+    }
+    .st > i.warn { background: var(--danger); }
+    .unit-hint {
+      color: var(--faint); font-size: 10px; text-align: right;
+      padding: 1px 0 3px;
+    }
+    .lat-row {
+      display: flex; justify-content: space-between;
+      padding: 8px 0 2px; margin-top: 4px;
+      border-top: 1px solid var(--line);
+      border-bottom: 0;
+    }
+    .lat-row .k { color: var(--mute); }
+    .lat-row .v { color: var(--bright); font-size: 12px; font-weight: 500; }
+
+    .net {
+      margin-top: 10px; padding-top: 8px;
+      border-top: 1px solid var(--line);
+      display: grid; gap: 3px;
+      font-size: 11px;
+    }
+    .net div { display: flex; justify-content: space-between; gap: 12px; }
+    .net .k { color: var(--faint); }
+    .net .v { color: var(--mute); }
+  </style>
+</head>
+<body>
+  <div class="scene-label">05 · Terminal Quiet</div>
+  <div class="panel" role="dialog" aria-label="Meterbar">
+    <div class="hdr">
+      <div class="brand">Meterbar</div>
+      <div class="cmds">[r]efresh  [s]ettings</div>
+    </div>
+
+    <section class="sec">
+      <div class="sec-label">provider.primary</div>
+      <div class="primary">
+        <span class="pname">Cursor</span>
+        <span class="pnum">63<small>%</small></span>
+        <span class="pmeta">$70/$70 · cycle</span>
+        <div class="hbar"><i style="width:63%"></i></div>
+      </div>
+    </section>
+
+    <section class="sec">
+      <div class="sec-label">providers</div>
+      <div class="kv">
+        <span class="k">Codex</span>
+        <div class="t"><i style="width:26%"></i></div>
+        <span class="v">26%</span>
+      </div>
+      <div class="kv balance">
+        <span class="k">DeepSeek</span>
+        <span class="v">¥42.44</span>
+        <span class="note">balance · no bar</span>
+      </div>
+    </section>
+
+    <section class="sec" style="margin-bottom:0">
+      <div class="sec-label">system</div>
+      <div class="sys-grid">
+        <div class="sr">
+          <span class="k">CPU</span>
+          <div class="st"><i style="width:20%"></i></div>
+          <span class="v">20%</span>
+        </div>
+        <div class="sr">
+          <span class="k">GPU</span>
+          <div class="st"><i class="warn" style="width:100%"></i></div>
+          <span class="v warn">100%</span>
+        </div>
+        <div class="sr">
+          <span class="k">MEM</span>
+          <div class="st"><i style="width:47.6%"></i></div>
+          <span class="v">40.0/44.0G</span>
+        </div>
+        <div class="unit-hint">used / free</div>
+        <div class="sr">
+          <span class="k">DISK</span>
+          <div class="st"><i style="width:33.9%"></i></div>
+          <span class="v">629/1229G</span>
+        </div>
+        <div class="unit-hint">used / free</div>
+        <div class="lat-row">
+          <span class="k">Latency</span>
+          <span class="v">605 ms</span>
+        </div>
+      </div>
+      <div class="net">
+        <div><span class="k">VPN</span><span class="v">—</span></div>
+        <div><span class="k">Public</span><span class="v">119.236.5.8</span></div>
+        <div><span class="k">Region</span><span class="v">Hong Kong</span></div>
+      </div>
+    </section>
+  </div>
+<script>if(location.hash==="#embed"||window.self!==window.top)document.documentElement.classList.add("embed");</script>
+</body>
+</html>

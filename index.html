@@ -18,15 +18,15 @@
           </div>
           <div class="toolbar-actions">
             <button type="button" class="toolbar-btn" id="btn-refresh" title="刷新" aria-label="刷新">
-              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-                <path d="M11.5 7A4.5 4.5 0 1 1 7 2.5" stroke="currentColor" stroke-width="1.35" stroke-linecap="round"/>
-                <path d="M7 1v2.5h2.5" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/>
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <path d="M13.2 8a5.2 5.2 0 1 1-1.5-3.6" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
+                <path d="M13.5 2.8v3.2h-3.2" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
               </svg>
             </button>
             <button type="button" class="toolbar-btn" id="btn-settings" title="设置" aria-label="设置">
-              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-                <circle cx="7" cy="7" r="2" stroke="currentColor" stroke-width="1.35"/>
-                <path d="M7 1.5v1.2M7 11.3v1.2M1.5 7h1.2M11.3 7h1.2M3.05 3.05l.85.85M10.1 10.1l.85.85M3.05 10.95l.85-.85M10.1 3.9l.85-.85" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <path d="M6.35 1.75h3.3l.35 1.55c.42.16.81.39 1.15.68l1.52-.52 1.65 2.86-1.2 1.05c.06.3.1.61.1.93s-.04.63-.1.93l1.2 1.05-1.65 2.86-1.52-.52a4.6 4.6 0 0 1-1.15.68l-.35 1.55h-3.3l-.35-1.55a4.6 4.6 0 0 1-1.15-.68l-1.52.52-1.65-2.86 1.2-1.05A4.3 4.3 0 0 1 2.7 8c0-.32.04-.63.1-.93l-1.2-1.05 1.65-2.86 1.52.52c.34-.29.73-.52 1.15-.68l.35-1.55z" stroke="currentColor" stroke-width="1.35" stroke-linejoin="round"/>
+                <circle cx="8" cy="8" r="2.15" stroke="currentColor" stroke-width="1.35"/>
               </svg>
             </button>
           </div>
@@ -34,160 +34,184 @@
 
         <div class="panel-meta" aria-live="polite">
           <div class="panel-meta-left">
-            <span id="footer-auto">Auto refresh</span>
+            <span id="footer-auto">Auto</span>
             <span class="status-sep" aria-hidden="true">·</span>
             <span id="footer-updated">Updated —</span>
           </div>
           <span class="panel-meta-right">Local only</span>
         </div>
 
-        <button
-          type="button"
-          class="compact-toggle"
-          id="btn-compact-toggle"
-          aria-expanded="true"
-          aria-controls="cursor-section"
-        >
-          <span>Compact overview</span>
-          <svg class="chevron" width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
-            <path d="M2 3.5 5 6.5 8 3.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>
-        </button>
-
         <div class="panel-body scroll-fade" id="panel-overview">
-          <div class="cursor-section provider-sortable" id="cursor-section" data-provider="cursor">
-            <section class="card card-cursor" id="card-cursor" aria-label="Cursor 用量">
-              <div class="cursor-compact hidden" id="cursor-compact">
-                <div class="card-header cursor-compact-header">
-                  <span class="card-tag tag-cursor">Cursor</span>
-                  <span class="card-meta" id="cursor-compact-text"></span>
+          <article
+            class="provider-block provider-sortable"
+            id="cursor-section"
+            data-provider="cursor"
+            data-reading="percent"
+            aria-label="Cursor 用量"
+          >
+            <div class="provider-hero">
+              <div class="hero-head">
+                <span class="hero-name">Cursor</span>
+                <span class="hero-value">
+                  <span id="cursor-hero-num">—</span><span class="hero-unit" id="cursor-hero-unit"></span>
+                </span>
+              </div>
+              <div class="hero-sub" id="cursor-hero-sub"></div>
+              <span class="hero-period hidden" id="cursor-hero-period" aria-hidden="true"></span>
+              <div class="hero-progress-stack">
+                <div class="hero-progress-auto" id="cursor-auto-row">
+                  <span
+                    class="hero-progress-label hidden"
+                    id="cursor-auto-label"
+                    aria-hidden="true"
+                  >Auto</span>
+                  <div class="hero-progress" aria-hidden="true">
+                    <div class="hero-progress-fill" id="cursor-hero-fill"></div>
+                  </div>
+                </div>
+                <div class="hero-progress-api hidden" id="cursor-api-row" aria-hidden="true">
+                  <span class="hero-progress-label">API</span>
+                  <div class="hero-progress" aria-hidden="true">
+                    <div class="hero-progress-fill" id="cursor-api-fill"></div>
+                  </div>
                 </div>
               </div>
-              <div class="cursor-full" id="cursor-full">
-            <div class="card-header">
-              <span class="card-tag tag-cursor">Cursor</span>
-              <span class="card-meta" id="cursor-membership"></span>
+              <p class="card-alert hidden" id="cursor-alert"></p>
             </div>
-            <div class="usage-stack">
-              <div class="usage-row hidden" id="cursor-auto-row">
-                <div class="usage-row-head">
-                  <span class="usage-name">Auto usage</span>
-                  <span class="usage-pct" id="cursor-auto-pct">—</span>
+            <div class="provider-strip">
+              <span class="strip-name">Cursor</span>
+              <div class="strip-bars">
+                <div class="strip-auto-row" id="cursor-strip-auto-row">
+                  <span
+                    class="strip-api-label hidden"
+                    id="cursor-strip-auto-label"
+                    aria-hidden="true"
+                  >Auto</span>
+                  <div class="strip-bar" aria-hidden="true">
+                    <div class="strip-bar-fill" id="cursor-strip-fill"></div>
+                  </div>
                 </div>
-                <div class="progress-track" aria-hidden="true">
-                  <div class="progress-fill cursor" id="cursor-auto-progress"></div>
+                <div
+                  class="strip-api-row hidden"
+                  id="cursor-strip-api-row"
+                  aria-hidden="true"
+                >
+                  <span class="strip-api-label">API</span>
+                  <div class="strip-bar" aria-hidden="true">
+                    <div class="strip-bar-fill" id="cursor-strip-api-fill"></div>
+                  </div>
                 </div>
               </div>
-              <div class="usage-row hidden" id="cursor-api-row">
-                <div class="usage-row-head">
-                  <span class="usage-name">API usage</span>
-                  <span class="usage-pct" id="cursor-api-pct">—</span>
+              <span class="strip-pct" id="cursor-strip-pct">—</span>
+            </div>
+          </article>
+
+          <article
+            class="provider-block provider-sortable"
+            id="card-codex"
+            data-provider="codex"
+            data-reading="percent"
+            aria-label="Codex 额度"
+          >
+            <div class="provider-hero">
+              <div class="hero-head">
+                <span class="hero-name">Codex</span>
+                <span class="hero-value">
+                  <span id="codex-hero-num">—</span><span class="hero-unit" id="codex-hero-unit"></span>
+                </span>
+              </div>
+              <div class="hero-sub" id="codex-hero-sub"></div>
+              <span class="hero-period hidden" id="codex-hero-period" aria-hidden="true"></span>
+              <div class="hero-progress" aria-hidden="true">
+                <div class="hero-progress-fill" id="codex-hero-fill"></div>
+              </div>
+              <p class="card-alert hidden" id="codex-alert"></p>
+            </div>
+            <div class="provider-strip">
+              <span class="strip-name">Codex</span>
+              <div class="strip-bar" aria-hidden="true">
+                <div class="strip-bar-fill" id="codex-strip-fill"></div>
+              </div>
+              <span class="strip-pct" id="codex-strip-pct">—</span>
+            </div>
+          </article>
+
+          <article
+            class="provider-block provider-sortable hidden"
+            id="card-deepseek"
+            data-provider="deepseek"
+            data-reading="balance"
+            aria-label="DeepSeek 余额"
+          >
+            <div class="provider-hero">
+              <div class="hero-head">
+                <span class="hero-name">DeepSeek</span>
+                <span class="hero-value">
+                  <span id="deepseek-hero-num">—</span><span class="hero-unit" id="deepseek-hero-unit"></span>
+                </span>
+              </div>
+              <div class="hero-sub" id="deepseek-hero-sub"></div>
+              <span class="hero-period hidden" id="deepseek-hero-period" aria-hidden="true"></span>
+              <p class="card-alert hidden" id="deepseek-alert"></p>
+            </div>
+            <div class="provider-strip provider-strip-balance">
+              <span class="strip-name">DeepSeek</span>
+              <span class="strip-pct" id="deepseek-strip-pct">—</span>
+            </div>
+          </article>
+
+          <div class="secondary-band" id="secondary-band">
+            <section class="sys-capsule" aria-label="系统与网络">
+              <div class="sys-h">System</div>
+              <div id="card-system" class="system-panel">
+                <div class="sys-metric">
+                  <span class="sys-label">CPU</span>
+                  <div class="sys-track" aria-hidden="true">
+                    <i class="sys-track-fill" id="sys-cpu-fill"></i>
+                  </div>
+                  <span class="sys-val" id="sys-cpu-pct">—</span>
                 </div>
-                <div class="progress-track" aria-hidden="true">
-                  <div class="progress-fill cursor" id="cursor-api-progress"></div>
+                <div class="sys-metric">
+                  <span class="sys-label">GPU</span>
+                  <div class="sys-track" aria-hidden="true">
+                    <i class="sys-track-fill" id="sys-gpu-fill"></i>
+                  </div>
+                  <span class="sys-val" id="sys-gpu-pct">—</span>
+                </div>
+                <div class="sys-metric">
+                  <span class="sys-label">MEM</span>
+                  <div class="sys-track" aria-hidden="true">
+                    <i class="sys-track-fill" id="sys-mem-fill"></i>
+                  </div>
+                  <span class="sys-val" id="sys-mem-text">—</span>
+                </div>
+                <div class="sys-metric">
+                  <span class="sys-label">DISK</span>
+                  <div class="sys-track" aria-hidden="true">
+                    <i class="sys-track-fill" id="sys-disk-fill"></i>
+                  </div>
+                  <span class="sys-val" id="sys-disk-text">—</span>
                 </div>
               </div>
-            </div>
-            <div class="card-footer-row">
-              <span class="detail-value" id="cursor-amount">—</span>
-              <span class="card-period" id="cursor-period"></span>
-            </div>
-            <p class="card-alert hidden" id="cursor-alert"></p>
+              <div id="card-latency" class="latency-panel" aria-label="延迟与网络">
+                <div class="lat-row">
+                  <span class="sys-label">Latency</span>
+                  <span class="sys-val" id="latency-ms">—</span>
+                </div>
+                <div class="net-tags" id="latency-egress" title="">
+                  <span class="net-tag net-addr">
+                    <span class="net-vpn-part hidden" id="net-vpn-part">
+                      <b>VPN</b><span id="sys-vpn-ip"></span>
+                    </span>
+                    <span class="net-ip-part">
+                      <b>IP</b><span id="latency-egress-ip">—</span>
+                    </span>
+                  </span>
+                  <span class="net-tag"><b>Region</b><span id="latency-region">—</span></span>
+                </div>
               </div>
             </section>
           </div>
-
-          <section class="card card-codex provider-sortable" id="card-codex" data-provider="codex" aria-label="Codex 额度">
-            <div class="card-header">
-              <span class="card-tag tag-codex">Codex</span>
-              <span class="card-meta" id="codex-membership"></span>
-            </div>
-            <div class="usage-stack">
-              <div class="usage-row hidden" id="codex-usage-row">
-                <div class="usage-row-head">
-                  <span class="usage-name">Rate limit</span>
-                  <span class="usage-pct" id="codex-usage-pct">—</span>
-                </div>
-                <div class="progress-track" aria-hidden="true">
-                  <div class="progress-fill codex" id="codex-usage-progress"></div>
-                </div>
-              </div>
-            </div>
-            <div class="card-footer-row">
-              <span class="detail-value" id="codex-detail">—</span>
-              <span class="card-period" id="codex-period"></span>
-            </div>
-            <p class="card-alert hidden" id="codex-alert"></p>
-          </section>
-
-          <section class="card card-deepseek provider-sortable hidden" id="card-deepseek" data-provider="deepseek" aria-label="DeepSeek 余额">
-            <div class="card-header">
-              <span class="card-tag tag-deepseek">DeepSeek</span>
-              <span class="card-meta" id="deepseek-currency"></span>
-            </div>
-            <div class="balance-row">
-              <span class="balance-label">可用余额</span>
-              <span class="balance-value" id="deepseek-balance">—</span>
-            </div>
-            <div class="card-footer-row">
-              <span class="detail-value" id="deepseek-detail">—</span>
-            </div>
-            <p class="card-alert hidden" id="deepseek-alert"></p>
-          </section>
-
-          <section class="card card-system" id="card-system" aria-label="系统指标">
-            <div class="card-header">
-              <span class="card-tag tag-system">System</span>
-            </div>
-            <div class="stat-grid">
-              <div class="stat-cell">
-                <span class="stat-label">CPU</span>
-                <span class="stat-value" id="sys-cpu-pct">—</span>
-                <div class="stat-bar" aria-hidden="true">
-                  <div class="stat-bar-fill cpu" id="sys-cpu-bar"></div>
-                </div>
-                <span class="stat-sub" id="sys-cpu-sub">—</span>
-              </div>
-              <div class="stat-cell">
-                <span class="stat-label">GPU</span>
-                <span class="stat-value" id="sys-gpu-pct">N/A</span>
-                <div class="stat-bar" aria-hidden="true">
-                  <div class="stat-bar-fill gpu" id="sys-gpu-bar"></div>
-                </div>
-                <span class="stat-sub" id="sys-gpu-sub">—</span>
-              </div>
-              <div class="stat-cell">
-                <span class="stat-label">Memory</span>
-                <span class="stat-value" id="sys-mem-pct">—</span>
-                <div class="stat-bar" aria-hidden="true">
-                  <div class="stat-bar-fill mem" id="sys-mem-bar"></div>
-                </div>
-                <span class="stat-sub" id="sys-mem-sub">—</span>
-              </div>
-            </div>
-          </section>
-
-          <section class="card card-latency" id="card-latency" aria-label="延迟与出口区域及公网 IP">
-            <div class="card-header">
-              <span class="card-tag tag-latency">Latency</span>
-            </div>
-            <div class="latency-body">
-              <div class="latency-block">
-                <span class="latency-block-label">延迟</span>
-                <div class="latency-row">
-                  <div class="latency-spark" id="latency-spark" aria-hidden="true"></div>
-                  <p class="latency-display" id="latency-ms">—</p>
-                </div>
-              </div>
-              <div class="latency-block latency-region-block">
-                <span class="latency-block-label">出口</span>
-                <div class="latency-egress" id="latency-egress" title="">
-                  <p class="latency-egress-ip" id="latency-egress-ip" hidden></p>
-                  <p class="latency-region truncate" id="latency-region">—</p>
-                </div>
-              </div>
-            </div>
-          </section>
         </div>
       </main>
 
@@ -407,7 +431,7 @@
 
           <section class="settings-group" aria-labelledby="settings-order-title">
             <h2 class="settings-group-title" id="settings-order-title">看板排序</h2>
-            <p class="field-hint settings-intro">可在主界面按住供应商卡片上下拖动排序（需至少两张可见卡；不含 System / Latency）。</p>
+            <p class="field-hint settings-intro">可在主界面按住供应商区块上下拖动排序（需至少两家可见；不含 System / Latency）。排序第一项显示为主读数。</p>
           </section>
 
           <section class="settings-group" aria-labelledby="settings-general-title">

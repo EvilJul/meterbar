@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Meterbar · UI 风格对比</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #0b0c0f;
+      --text: rgba(255,255,255,0.9);
+      --mute: rgba(255,255,255,0.52);
+      --faint: rgba(255,255,255,0.32);
+      --line: rgba(255,255,255,0.08);
+      --accent: #c4b08a;
+      font-family: "IBM Plex Sans", "PingFang SC", sans-serif;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      -webkit-font-smoothing: antialiased;
+    }
+    header {
+      padding: 28px 32px 12px;
+      max-width: 1480px;
+      margin: 0 auto;
+    }
+    h1 {
+      font-size: 20px; font-weight: 600; letter-spacing: -0.02em;
+    }
+    h1 span { color: var(--mute); font-weight: 450; }
+    .sub {
+      margin-top: 8px; font-size: 13px; color: var(--mute);
+      max-width: 720px; line-height: 1.5;
+    }
+    nav {
+      display: flex; flex-wrap: wrap; gap: 8px;
+      margin-top: 16px;
+    }
+    nav a {
+      font-size: 12px; color: var(--mute); text-decoration: none;
+      padding: 6px 10px; border-radius: 8px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,0.03);
+    }
+    nav a:hover { color: var(--text); border-color: rgba(255,255,255,0.16); }
+    nav a.rec {
+      color: var(--accent);
+      border-color: rgba(196,176,138,0.35);
+    }
+    nav a.pending {
+      color: #7ec8ff;
+      border-color: rgba(126,200,255,0.45);
+      background: rgba(126,200,255,0.08);
+      font-weight: 600;
+    }
+    .hint {
+      margin-top: 12px; font-size: 11px; color: var(--faint); line-height: 1.45;
+    }
+    .pending-banner {
+      margin-top: 16px;
+      padding: 12px 14px;
+      border-radius: 12px;
+      border: 1px solid rgba(126,200,255,0.35);
+      background: rgba(126,200,255,0.08);
+      display: flex; flex-wrap: wrap; gap: 10px 16px;
+      align-items: center; justify-content: space-between;
+    }
+    .pending-banner strong {
+      color: #7ec8ff; font-size: 13px; font-weight: 600;
+    }
+    .pending-banner p {
+      font-size: 12px; color: var(--mute); line-height: 1.45; margin-top: 4px;
+    }
+    .pending-banner a {
+      font-size: 12px; color: #7ec8ff; text-decoration: none;
+      padding: 7px 12px; border-radius: 8px;
+      border: 1px solid rgba(126,200,255,0.4);
+      white-space: nowrap;
+    }
+    .pending-banner a:hover { background: rgba(126,200,255,0.12); }
+
+    .board {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(300px, 1fr));
+      gap: 22px;
+      padding: 20px 32px 56px;
+      max-width: 1480px;
+      margin: 0 auto;
+    }
+    .col.pending-col .frame-wrap {
+      border-color: rgba(126,200,255,0.4);
+      box-shadow: 0 12px 36px rgba(0,0,0,0.4), 0 0 0 1px rgba(126,200,255,0.15);
+    }
+    .cap .tag.pending-tag {
+      color: #7ec8ff;
+    }
+    @media (max-width: 1200px) {
+      .board { grid-template-columns: repeat(2, minmax(300px, 1fr)); }
+    }
+    @media (max-width: 780px) {
+      .board { grid-template-columns: 1fr; max-width: 420px; }
+    }
+    .col { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+    .cap {
+      display: flex; align-items: baseline; justify-content: space-between;
+      gap: 8px; padding: 0 2px;
+    }
+    .cap h2 { font-size: 13px; font-weight: 600; }
+    .cap .tag {
+      font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase;
+      color: var(--accent);
+    }
+    .blurb {
+      font-size: 12px; color: var(--mute); line-height: 1.4;
+      padding: 0 2px; min-height: 36px;
+    }
+    .frame-wrap {
+      border-radius: 16px;
+      border: 1px solid var(--line);
+      background: #101218;
+      overflow: hidden;
+      box-shadow: 0 12px 36px rgba(0,0,0,0.4);
+    }
+    iframe {
+      display: block;
+      width: 100%;
+      height: 620px;
+      border: 0;
+      background: transparent;
+    }
+    .open {
+      font-size: 11px; color: var(--faint); padding: 0 2px;
+    }
+    .open a { color: var(--mute); }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Meterbar <span>· 风格对比</span></h1>
+    <p class="sub">
+      托盘窄面板效果图（约 340–360px）。确认前不改生产代码。
+      DeepSeek 仅余额；MEM/DISK 数值即可；Latency 独立一行。
+    </p>
+    <div class="pending-banner">
+      <div>
+        <strong>待确认稿 · 03b 胶囊精修</strong>
+        <p>基于用户选定的浅色胶囊风格：DeepSeek 无进度条文案、额度右对齐；MEM/DISK 去掉「已用/剩余」；右上角图标按钮。</p>
+      </div>
+      <a href="03b-capsule-refined.html" target="_blank">打开 03b →</a>
+    </div>
+    <nav>
+      <a class="pending" href="#v3b">03b 胶囊精修 ★待确认</a>
+      <a href="#v1">01 精密仪表</a>
+      <a href="#v2">02 编辑排版</a>
+      <a href="#v3">03 胶囊工具条</a>
+      <a href="#v4">04 玻璃分层</a>
+      <a href="#v5">05 数据终端</a>
+    </nav>
+    <p class="hint">
+      单独打开：
+      <a href="03b-capsule-refined.html">03b（待确认）</a> ·
+      <a href="01-precision-instrument.html">01</a> ·
+      <a href="02-editorial.html">02</a> ·
+      <a href="03-utility-capsule.html">03</a> ·
+      <a href="04-layered-glass.html">04</a> ·
+      <a href="05-terminal-quiet.html">05</a>
+    </p>
+  </header>
+
+  <main class="board">
+    <article class="col pending-col" id="v3b">
+      <div class="cap">
+        <h2>03b · 胶囊精修</h2>
+        <span class="tag pending-tag">待确认</span>
+      </div>
+      <p class="blurb">用户选定浅色胶囊方向的精修稿：无多余进度条文案、额度右对齐、图标按钮。</p>
+      <div class="frame-wrap">
+        <iframe src="03b-capsule-refined.html#embed" title="胶囊精修待确认" loading="eager"></iframe>
+      </div>
+      <p class="open"><a href="03b-capsule-refined.html" target="_blank">单独打开</a></p>
+    </article>
+
+    <article class="col" id="v1">
+      <div class="cap">
+        <h2>01 · 精密仪表</h2>
+        <span class="tag">Restrained</span>
+      </div>
+      <p class="blurb">单主读数 + 安静次级 System；语义色几乎只在 GPU 满载。</p>
+      <div class="frame-wrap">
+        <iframe src="01-precision-instrument.html#embed" title="精密仪表" loading="lazy"></iframe>
+      </div>
+      <p class="open"><a href="01-precision-instrument.html" target="_blank">单独打开</a></p>
+    </article>
+
+    <article class="col" id="v2">
+      <div class="cap">
+        <h2>02 · 编辑排版</h2>
+        <span class="tag">Recommended</span>
+      </div>
+      <p class="blurb">强字号层级与细分割线；纸感浅底，极少色块，偏杂志排版。</p>
+      <div class="frame-wrap">
+        <iframe src="02-editorial.html#embed" title="编辑排版" loading="lazy"></iframe>
+      </div>
+      <p class="open"><a href="02-editorial.html" target="_blank">单独打开</a></p>
+    </article>
+
+    <article class="col" id="v3">
+      <div class="cap">
+        <h2>03 · 胶囊工具条</h2>
+        <span class="tag">Dense</span>
+      </div>
+      <p class="blurb">浅色紧凑胶囊块；信息密度高，仍保持清晰分区。</p>
+      <div class="frame-wrap">
+        <iframe src="03-utility-capsule.html#embed" title="胶囊工具条" loading="lazy"></iframe>
+      </div>
+      <p class="open"><a href="03-utility-capsule.html" target="_blank">单独打开</a></p>
+    </article>
+
+    <article class="col" id="v4">
+      <div class="cap">
+        <h2>04 · 玻璃分层</h2>
+        <span class="tag">Layered</span>
+      </div>
+      <p class="blurb">间距与透明度分层，少用描边卡片；青绿点缀，偏菜单栏材质。</p>
+      <div class="frame-wrap">
+        <iframe src="04-layered-glass.html#embed" title="玻璃分层" loading="lazy"></iframe>
+      </div>
+      <p class="open"><a href="04-layered-glass.html" target="_blank">单独打开</a></p>
+    </article>
+
+    <article class="col" id="v5">
+      <div class="cap">
+        <h2>05 · 数据终端</h2>
+        <span class="tag">Ops Quiet</span>
+      </div>
+      <p class="blurb">等宽数字、极细边线；专业运维感，刻意压低刺眼对比。</p>
+      <div class="frame-wrap">
+        <iframe src="05-terminal-quiet.html#embed" title="数据终端" loading="lazy"></iframe>
+      </div>
+      <p class="open"><a href="05-terminal-quiet.html" target="_blank">单独打开</a></p>
+    </article>
+  </main>
+
+  <script>
+    // iframe 内隐藏场景标签，并裁切桌面背景以贴近真实托盘预览
+    document.querySelectorAll("iframe").forEach((frame) => {
+      frame.addEventListener("load", () => {
+        try {
+          frame.contentDocument?.documentElement.classList.add("embed");
+        } catch (_) { /* file:// same-origin usually ok */ }
+      });
+    });
+  </script>
+</body>
+</html>

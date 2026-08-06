@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { LogicalSize, getCurrentWindow } from "@tauri-apps/api/window";
 import {
   disable as disableAutostart,
   enable as enableAutostart,
@@ -41,6 +41,9 @@ interface SystemSnapshot {
   gpuTempC?: number | null;
   memUsedBytes: number;
   memTotalBytes: number;
+  diskUsedBytes?: number | null;
+  diskAvailableBytes?: number | null;
+  vpnIp?: string | null;
   fetchedAt: string;
 }
 
@@ -101,6 +104,13 @@ const DEFAULT_VISIBILITY: ProviderVisibility = {
   deepseek: "auto",
 };
 
+/** 与 tauri.conf.json / CSS 对齐的窗口尺寸约束 */
+const PANEL_WIDTH = 360;
+const PANEL_MIN_HEIGHT = 180;
+const PANEL_MAX_HEIGHT_FALLBACK = 580;
+/** 壳层边框占位（border-box 下避免裁切） */
+const PANEL_CHROME_PX = 2;
+
 const $ = <T extends HTMLElement>(id: string) =>
   document.getElementById(id) as T;
 
@@ -124,16 +134,13 @@ let refreshing = false;
 /** 面板刚显示后的失焦保护窗口（毫秒时间戳） */
 let ignoreBlurUntil = 0;
 const BLUR_GRACE_MS = 350;
-const LATENCY_HISTORY_SIZE = 20;
-const COMPACT_STORAGE_KEY = "usages-compact-collapsed";
 const SETTINGS_PROVIDER_COLLAPSED_KEY = "usages-settings-provider-collapsed";
 
 type UsageTone = "ok" | "warn" | "danger" | "neutral";
 
-/** 延迟采样环形缓冲（毫秒；null 表示超时/错误） */
-const latencyHistory: (number | null)[] = [];
-let latencyHistoryHasReal = false;
-let lastLatencyFetchedAt: string | null = null;
+/** 重置临近预警：剩余 < 24h → warn；< 6h（含已过重置点）→ danger */
+const RESET_WARN_MS = 24 * 60 * 60 * 1000;
+const RESET_DANGER_MS = 6 * 60 * 60 * 1000;
 
 function centsToDollars(cents: number): string {
   return `$${(cents / 100).toFixed(2)}`;
@@ -165,10 +172,71 @@ function applyTone(el: HTMLElement, tone: UsageTone): void {
   }
 }
 
-function setFillTone(fill: HTMLElement, tone: UsageTone): void {
-  fill.classList.toggle("ok", tone === "ok");
-  fill.classList.toggle("warn", tone === "warn");
-  fill.classList.toggle("danger", tone === "danger");
+function worseTone(a: UsageTone, b: UsageTone): UsageTone {
+  const rank: Record<UsageTone, number> = {
+    neutral: 0,
+    ok: 1,
+    warn: 2,
+    danger: 3,
+  };
+  return rank[a] >= rank[b] ? a : b;
+}
+
+/** periodEnd 距现在的重置紧迫度（非用量色阶）。 */
+function periodResetTone(periodEnd?: string | null): UsageTone {
+  if (!periodEnd) return "neutral";
+  const end = new Date(periodEnd).getTime();
+  if (Number.isNaN(end)) return "neutral";
+  const remain = end - Date.now();
+  if (remain <= RESET_DANGER_MS) return "danger";
+  if (remain <= RESET_WARN_MS) return "warn";
+  return "neutral";
+}
+
+/** 紧凑时钟：`8/10 15:57`（用于副行「重置 …」）。 */
+function formatResetClock(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const timePart = d.toLocaleTimeString(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+  return `${d.getMonth() + 1}/${d.getDate()} ${timePart}`;
+}
+
+/** 副行内联重置文案；已过重置点显示「已到重置点」。 */
+function formatResetInline(periodEnd?: string | null): string {
+  if (!periodEnd) return "";
+  const d = new Date(periodEnd);
+  if (Number.isNaN(d.getTime())) return "";
+  if (d.getTime() <= Date.now()) return "已到重置点";
+  const clock = formatResetClock(periodEnd);
+  return clock ? `重置 ${clock}` : "";
+}
+
+type HeroSubPart = { text: string; tone?: UsageTone };
+
+/** 拼装主卡副行；带 tone 的片段包成 `.hero-reset`，避免新增整行。 */
+function setHeroSubParts(el: HTMLElement, parts: HeroSubPart[]): void {
+  const items = parts.filter((p) => p.text.trim());
+  const key = items.map((p) => `${p.text}\0${p.tone ?? ""}`).join("\n");
+  if (el.dataset.subKey === key) return;
+  el.dataset.subKey = key;
+  el.replaceChildren();
+  items.forEach((part, i) => {
+    if (i > 0) el.appendChild(document.createTextNode(" · "));
+    const tone = part.tone;
+    if (tone === "warn" || tone === "danger") {
+      const span = document.createElement("span");
+      span.className = "hero-reset";
+      applyTone(span, tone);
+      span.textContent = part.text;
+      el.appendChild(span);
+    } else {
+      el.appendChild(document.createTextNode(part.text));
+    }
+  });
 }
 
 function setTextIfChanged(el: HTMLElement, text: string): void {
@@ -179,42 +247,67 @@ function setWidthIfChanged(el: HTMLElement, width: string): void {
   if (el.style.width !== width) el.style.width = width;
 }
 
-function setUsageBar(
-  rowId: string,
+/** 设置进度条宽度；可叠加重置临近 tone（取更严重者）。 */
+function setProgressWidth(
   fillId: string,
-  pctId: string,
   percent: number | null | undefined,
+  boostTone: UsageTone = "neutral",
 ): void {
-  const row = $(rowId);
   const fill = $(fillId);
-  const pctEl = $(pctId);
   if (percent == null || Number.isNaN(percent)) {
-    setHiddenIfChanged(row, true);
     setWidthIfChanged(fill, "0%");
-    setFillTone(fill, "neutral");
-    applyTone(pctEl, "neutral");
-    setTextIfChanged(pctEl, "—");
+    fill.classList.remove("ok", "warn", "danger");
     return;
   }
-  const used = clampPercent(percent);
-  const tone = usageTone(used);
-  setHiddenIfChanged(row, false);
-  setWidthIfChanged(fill, `${used}%`);
-  setFillTone(fill, tone);
-  applyTone(pctEl, tone);
-  setTextIfChanged(pctEl, `${formatPercent(used)} used`);
+  setWidthIfChanged(fill, `${clampPercent(percent)}%`);
+  const tone = worseTone(usageTone(percent), boostTone);
+  fill.classList.toggle("ok", tone === "ok");
+  fill.classList.toggle("warn", tone === "warn");
+  fill.classList.toggle("danger", tone === "danger");
 }
 
-function setStatBar(
-  barId: string,
-  percent: number | null | undefined,
+function setHeroValue(
+  numId: string,
+  unitId: string,
+  numText: string,
+  unitText = "",
 ): void {
-  const bar = $(barId);
-  if (percent == null || Number.isNaN(percent)) {
-    setWidthIfChanged(bar, "0%");
-    return;
+  setTextIfChanged($(numId), numText);
+  setTextIfChanged($(unitId), unitText);
+}
+
+/** Cursor 主百分比：优先 Auto，其次聚合 percent，再 API。 */
+function cursorPrimaryPercent(snap: UsageSnapshot): number | null {
+  if (snap.autoPercentUsed != null && !Number.isNaN(snap.autoPercentUsed)) {
+    return snap.autoPercentUsed;
   }
-  setWidthIfChanged(bar, `${clampPercent(percent)}%`);
+  if (snap.percentUsed != null && !Number.isNaN(snap.percentUsed)) {
+    return snap.percentUsed;
+  }
+  if (snap.apiPercentUsed != null && !Number.isNaN(snap.apiPercentUsed)) {
+    return snap.apiPercentUsed;
+  }
+  return null;
+}
+
+function formatHeroPeriod(
+  membership?: string | null,
+  periodEnd?: string | null,
+): string {
+  const parts: string[] = [];
+  if (membership?.trim()) parts.push(membership.trim());
+  const end = formatPeriodEnd(periodEnd);
+  if (end) parts.push(end);
+  return parts.join(" · ");
+}
+
+function formatCursorAmount(snap: UsageSnapshot): string {
+  if (snap.unit === "cents") {
+    const limit = snap.limit != null ? centsToDollars(snap.limit) : "—";
+    return `${centsToDollars(snap.used)} / ${limit}`;
+  }
+  if (snap.limit != null) return `${snap.used} / ${snap.limit}`;
+  return String(snap.used);
 }
 
 function formatPeriodEnd(iso: string | null | undefined): string {
@@ -360,8 +453,29 @@ function providerOrderMatchesDom(order: ProviderId[]): boolean {
   return order.every((id, i) => id === domOrder[i]);
 }
 
+/**
+ * 主供应商 = 当前可见列表中排序第一项（与拖拽 order 一致）。
+ * 其余可见供应商渲染为紧凑 strip。
+ */
+function applyPrimaryProviderRoles(): void {
+  const visible = visibleProviderNodes();
+  const primary = visible[0] ?? null;
+  for (const id of PROVIDER_IDS) {
+    const node = providerDomNode(id);
+    if (!node) continue;
+    if (node.classList.contains("hidden")) {
+      node.classList.remove("is-primary", "is-strip");
+      continue;
+    }
+    const isPrimary = node === primary;
+    node.classList.toggle("is-primary", isPrimary);
+    node.classList.toggle("is-strip", !isPrimary);
+  }
+}
+
 function applyBoardLayout(state: PanelState): void {
   const overview = $("panel-overview");
+  const secondaryBand = $("secondary-band");
   const systemCard = $("card-system");
   const latencyCard = $("card-latency");
   const order = normalizeProviderOrder(currentSettings.providerOrder);
@@ -378,22 +492,21 @@ function applyBoardLayout(state: PanelState): void {
   }
   setHiddenIfChanged(systemCard, !showSystem);
   setHiddenIfChanged(latencyCard, !showLatency);
+  setHiddenIfChanged(secondaryBand, !showSystem && !showLatency);
 
-  // 拖拽中不重排；排序仅在 order 或 System/Latency 相对位置变化时动手。
+  // 拖拽中不重排；排序仅在 order 或次级带相对位置变化时动手。
   if (!providerDragActive) {
     const needReorder =
       !providerOrderMatchesDom(order) ||
-      overview.children[overview.children.length - 2] !== systemCard ||
-      overview.children[overview.children.length - 1] !== latencyCard;
+      overview.children[overview.children.length - 1] !== secondaryBand;
 
     if (needReorder) {
       for (const id of order) {
         const node = providerDomNode(id);
         if (!node) continue;
-        overview.insertBefore(node, systemCard);
+        overview.insertBefore(node, secondaryBand);
       }
-      overview.appendChild(systemCard);
-      overview.appendChild(latencyCard);
+      overview.appendChild(secondaryBand);
     }
   }
 
@@ -402,12 +515,8 @@ function applyBoardLayout(state: PanelState): void {
     return node != null && !node.classList.contains("hidden");
   }).length;
   overview.classList.toggle("provider-sort-disabled", visibleCount < 2);
-
-  const cursorVisible = shouldShowProvider(
-    parseVisibilityMode(currentSettings.providerVisibility.cursor),
-    isConfigured("cursor", state),
-  );
-  setHiddenIfChanged($("btn-compact-toggle"), !cursorVisible);
+  applyPrimaryProviderRoles();
+  schedulePanelWindowResize();
 }
 
 function formatBalanceAmount(currency: string | null | undefined, amount: number): string {
@@ -420,49 +529,94 @@ function formatBalanceAmount(currency: string | null | undefined, amount: number
 
 function renderCursor(state: PanelState): void {
   const snap = cursorUsage(state);
-  const membership = $("cursor-membership");
-  const amountEl = $("cursor-amount");
-  const periodEl = $("cursor-period");
+  const periodEl = $("cursor-hero-period");
+  const subEl = $("cursor-hero-sub");
+  const stripPct = $("cursor-strip-pct");
   const alertEl = $("cursor-alert");
 
+  const heroValue = $("cursor-hero-num").parentElement as HTMLElement;
+
+  const apiRow = $("cursor-api-row");
+  const stripApiRow = $("cursor-strip-api-row");
+  const autoLabel = $("cursor-auto-label");
+  const stripAutoLabel = $("cursor-strip-auto-label");
+
   if (!snap) {
-    membership.textContent = "";
-    setUsageBar("cursor-auto-row", "cursor-auto-progress", "cursor-auto-pct", null);
-    setUsageBar("cursor-api-row", "cursor-api-progress", "cursor-api-pct", null);
-    amountEl.textContent = "—";
-    applyTone(amountEl, "neutral");
     periodEl.textContent = "";
+    setHeroValue("cursor-hero-num", "cursor-hero-unit", "—", "");
+    setHeroSubParts(subEl, []);
+    setProgressWidth("cursor-hero-fill", null);
+    setProgressWidth("cursor-strip-fill", null);
+    setProgressWidth("cursor-api-fill", null);
+    setProgressWidth("cursor-strip-api-fill", null);
+    apiRow.classList.add("hidden");
+    apiRow.setAttribute("aria-hidden", "true");
+    stripApiRow.classList.add("hidden");
+    stripApiRow.setAttribute("aria-hidden", "true");
+    autoLabel.classList.add("hidden");
+    autoLabel.setAttribute("aria-hidden", "true");
+    stripAutoLabel.classList.add("hidden");
+    stripAutoLabel.setAttribute("aria-hidden", "true");
+    setTextIfChanged(stripPct, "—");
+    stripPct.removeAttribute("title");
+    applyTone(heroValue, "neutral");
+    applyTone(stripPct, "neutral");
     alertEl.classList.add("hidden");
-    renderCursorCompactSummary(undefined);
     return;
   }
 
-  membership.textContent = snap.membership ?? "";
-
-  setUsageBar(
-    "cursor-auto-row",
-    "cursor-auto-progress",
-    "cursor-auto-pct",
-    snap.autoPercentUsed,
-  );
-  setUsageBar(
-    "cursor-api-row",
-    "cursor-api-progress",
-    "cursor-api-pct",
-    snap.apiPercentUsed,
-  );
-
-  if (snap.unit === "cents") {
-    const limit = snap.limit != null ? centsToDollars(snap.limit) : "—";
-    amountEl.textContent = `Included ${centsToDollars(snap.used)} / ${limit}`;
+  // 周期信息放在副行（对齐 03b），顶部 period 节点仅作兼容占位
+  periodEl.textContent = formatHeroPeriod(snap.membership, snap.periodEnd);
+  const resetInline = formatResetInline(snap.periodEnd);
+  const resetTone = periodResetTone(snap.periodEnd);
+  const primary = cursorPrimaryPercent(snap);
+  if (primary != null) {
+    setHeroValue(
+      "cursor-hero-num",
+      "cursor-hero-unit",
+      `${clampPercent(primary).toFixed(0)}`,
+      "%",
+    );
+    setTextIfChanged(stripPct, formatPercent(primary));
   } else {
-    amountEl.textContent = `${snap.used}${snap.limit != null ? ` / ${snap.limit}` : ""}`;
+    setHeroValue("cursor-hero-num", "cursor-hero-unit", "—", "");
+    setTextIfChanged(stripPct, "—");
   }
+  // 主轨/主读数：Auto（或聚合 percent）；色阶按主百分比，重置紧迫度只影响数字与副行
+  setProgressWidth("cursor-hero-fill", primary);
+  setProgressWidth("cursor-strip-fill", primary);
+  const tone = worseTone(usageTone(primary), resetTone);
+  applyTone(heroValue, tone);
+  applyTone(stripPct, tone);
+  stripPct.title = resetInline || "";
 
-  const amountTone = cursorAmountTone(snap);
-  applyTone(amountEl, amountTone);
+  // API 轨：仅绑定 apiPercentUsed；与主轨独立色阶。主读数已回退到 API 时不重复一条轨
+  const apiPct =
+    snap.apiPercentUsed != null && !Number.isNaN(snap.apiPercentUsed)
+      ? snap.apiPercentUsed
+      : null;
+  const showApiTrack =
+    apiPct != null &&
+    (snap.autoPercentUsed != null || snap.percentUsed != null);
+  apiRow.classList.toggle("hidden", !showApiTrack);
+  apiRow.setAttribute("aria-hidden", showApiTrack ? "false" : "true");
+  stripApiRow.classList.toggle("hidden", !showApiTrack);
+  stripApiRow.setAttribute("aria-hidden", showApiTrack ? "false" : "true");
+  // Auto 标签与 API 轨同步：仅双轨时显示，单轨保持干净
+  autoLabel.classList.toggle("hidden", !showApiTrack);
+  autoLabel.setAttribute("aria-hidden", showApiTrack ? "false" : "true");
+  stripAutoLabel.classList.toggle("hidden", !showApiTrack);
+  stripAutoLabel.setAttribute("aria-hidden", showApiTrack ? "false" : "true");
+  // 色阶只用 apiPct，勿混入主百分比或重置紧迫度
+  setProgressWidth("cursor-api-fill", showApiTrack ? apiPct : null);
+  setProgressWidth("cursor-strip-api-fill", showApiTrack ? apiPct : null);
 
-  periodEl.textContent = formatPeriodEnd(snap.periodEnd);
+  // 副行：金额额度 + 重置时间；不再写 API 文字百分比
+  const subParts: HeroSubPart[] = [{ text: formatCursorAmount(snap) }];
+  if (resetInline) {
+    subParts.push({ text: resetInline, tone: resetTone });
+  }
+  setHeroSubParts(subEl, subParts);
 
   if (snap.status === "needs_auth") {
     alertEl.textContent =
@@ -475,140 +629,129 @@ function renderCursor(state: PanelState): void {
     alertEl.textContent = "";
     alertEl.classList.add("hidden");
   }
-
-  renderCursorCompactSummary(snap);
-}
-
-function cursorAmountTone(snap: UsageSnapshot): UsageTone {
-  const candidates = [
-    snap.autoPercentUsed,
-    snap.apiPercentUsed,
-    snap.percentUsed,
-  ].filter((n): n is number => n != null && !Number.isNaN(n));
-  if (candidates.length === 0) return "neutral";
-  return usageTone(Math.max(...candidates));
-}
-
-function renderCursorCompactSummary(snap: UsageSnapshot | undefined): void {
-  const el = $("cursor-compact-text");
-  if (!snap) {
-    el.textContent = "—";
-    applyTone(el, "neutral");
-    return;
-  }
-  const parts: string[] = [];
-  if (snap.autoPercentUsed != null) {
-    parts.push(`Auto ${formatPercent(snap.autoPercentUsed)}`);
-  }
-  if (snap.apiPercentUsed != null) {
-    parts.push(`API ${formatPercent(snap.apiPercentUsed)}`);
-  }
-  if (parts.length === 0 && snap.percentUsed != null) {
-    parts.push(formatPercent(snap.percentUsed));
-  }
-  el.textContent = parts.length > 0 ? parts.join(" · ") : "—";
-  applyTone(el, cursorAmountTone(snap));
 }
 
 function renderCodex(state: PanelState): void {
   const snap = codexUsage(state);
-  const membership = $("codex-membership");
-  const detailEl = $("codex-detail");
-  const periodEl = $("codex-period");
+  const periodEl = $("codex-hero-period");
+  const subEl = $("codex-hero-sub");
+  const stripPct = $("codex-strip-pct");
   const alertEl = $("codex-alert");
 
+  const heroValue = $("codex-hero-num").parentElement as HTMLElement;
+
   if (!snap) {
-    membership.textContent = "";
-    setUsageBar("codex-usage-row", "codex-usage-progress", "codex-usage-pct", null);
-    detailEl.textContent = "—";
-    applyTone(detailEl, "neutral");
     periodEl.textContent = "";
+    setHeroValue("codex-hero-num", "codex-hero-unit", "—", "");
+    setHeroSubParts(subEl, []);
+    setProgressWidth("codex-hero-fill", null);
+    setProgressWidth("codex-strip-fill", null);
+    setTextIfChanged(stripPct, "—");
+    stripPct.removeAttribute("title");
+    applyTone(heroValue, "neutral");
+    applyTone(stripPct, "neutral");
     alertEl.classList.add("hidden");
     return;
   }
 
-  membership.textContent = snap.membership ?? "";
+  periodEl.textContent = formatHeroPeriod(snap.membership, snap.periodEnd);
+  const resetInline = formatResetInline(snap.periodEnd);
+  const resetTone = periodResetTone(snap.periodEnd);
 
   // 非 ok：明确失败/needs_auth，不渲染假成功进度条。
   if (snap.status !== "ok") {
-    setUsageBar("codex-usage-row", "codex-usage-progress", "codex-usage-pct", null);
+    setProgressWidth("codex-hero-fill", null);
+    setProgressWidth("codex-strip-fill", null);
+    setHeroValue("codex-hero-num", "codex-hero-unit", "—", "");
+    applyTone(heroValue, "neutral");
+    applyTone(stripPct, "neutral");
+    stripPct.removeAttribute("title");
     if (snap.status === "needs_auth") {
-      detailEl.textContent = "需要登录";
-      applyTone(detailEl, "warn");
+      setHeroSubParts(subEl, [{ text: "需要登录" }]);
+      setTextIfChanged(stripPct, "登录");
       alertEl.textContent =
         snap.message || "请先在本机 Codex / CLI 登录 ChatGPT";
     } else {
-      detailEl.textContent = "本地不可用";
-      applyTone(detailEl, "danger");
+      setHeroSubParts(subEl, [{ text: "本地不可用" }]);
+      setTextIfChanged(stripPct, "—");
       alertEl.textContent = snap.message || "本地 Codex 不可用";
     }
-    periodEl.textContent = "";
     alertEl.classList.remove("hidden");
     return;
   }
 
-  setUsageBar(
-    "codex-usage-row",
-    "codex-usage-progress",
-    "codex-usage-pct",
-    snap.percentUsed,
-  );
-  const tone = usageTone(snap.percentUsed);
-  detailEl.textContent = snap.message || formatPercent(snap.percentUsed);
-  applyTone(detailEl, tone);
-  periodEl.textContent = formatPeriodEnd(snap.periodEnd);
+  const pct = snap.percentUsed;
+  if (pct != null && !Number.isNaN(pct)) {
+    setHeroValue(
+      "codex-hero-num",
+      "codex-hero-unit",
+      `${clampPercent(pct).toFixed(0)}`,
+      "%",
+    );
+    setTextIfChanged(stripPct, formatPercent(pct));
+  } else {
+    setHeroValue("codex-hero-num", "codex-hero-unit", "—", "");
+    setTextIfChanged(stripPct, "—");
+  }
+  setProgressWidth("codex-hero-fill", pct, resetTone);
+  setProgressWidth("codex-strip-fill", pct, resetTone);
+  const tone = worseTone(usageTone(pct), resetTone);
+  applyTone(heroValue, tone);
+  applyTone(stripPct, tone);
+  stripPct.title = resetInline || "";
+  const subParts: HeroSubPart[] = [
+    { text: snap.message?.trim() || "Rate limit" },
+  ];
+  if (resetInline) {
+    subParts.push({ text: resetInline, tone: resetTone });
+  }
+  setHeroSubParts(subEl, subParts);
   alertEl.textContent = "";
   alertEl.classList.add("hidden");
 }
 
 function renderDeepSeek(state: PanelState): void {
   const snap = deepseekUsage(state);
-  const currencyEl = $("deepseek-currency");
-  const balanceEl = $("deepseek-balance");
-  const detailEl = $("deepseek-detail");
+  const periodEl = $("deepseek-hero-period");
+  const subEl = $("deepseek-hero-sub");
+  const stripPct = $("deepseek-strip-pct");
   const alertEl = $("deepseek-alert");
 
   if (!snap) {
-    currencyEl.textContent = "";
-    balanceEl.textContent = "—";
-    applyTone(balanceEl, "neutral");
-    detailEl.textContent = "加载中…";
+    periodEl.textContent = "";
+    setHeroValue("deepseek-hero-num", "deepseek-hero-unit", "—", "");
+    subEl.textContent = "加载中…";
+    setTextIfChanged(stripPct, "—");
     alertEl.classList.add("hidden");
     return;
   }
 
-  currencyEl.textContent = snap.membership ?? "";
+  periodEl.textContent = snap.membership?.trim() || "";
 
   if (snap.status === "needs_auth") {
-    balanceEl.textContent = "—";
-    applyTone(balanceEl, "warn");
-    detailEl.textContent = "需要 API Key";
+    setHeroValue("deepseek-hero-num", "deepseek-hero-unit", "—", "");
+    subEl.textContent = "需要 API Key";
+    setTextIfChanged(stripPct, "—");
     alertEl.textContent = snap.message || "请在设置中配置 DeepSeek API Key";
     alertEl.classList.remove("hidden");
     return;
   }
 
   if (snap.status !== "ok") {
-    balanceEl.textContent = "—";
-    applyTone(balanceEl, "warn");
-    detailEl.textContent = snap.message || "查询失败";
+    setHeroValue("deepseek-hero-num", "deepseek-hero-unit", "—", "");
+    subEl.textContent = snap.message || "查询失败";
+    setTextIfChanged(stripPct, "—");
     alertEl.textContent = snap.message || "DeepSeek 余额查询失败";
     alertEl.classList.remove("hidden");
     return;
   }
 
   const total = snap.remaining ?? 0;
-  balanceEl.textContent = formatBalanceAmount(snap.membership, total);
-  applyTone(balanceEl, total <= 0 ? "warn" : "ok");
-
-  const parts: string[] = [];
-  if (snap.used > 0) {
-    parts.push(`充值 ${formatBalanceAmount(snap.membership, snap.used)}`);
-  }
-  if (snap.onDemandUsed != null && snap.onDemandUsed > 0) {
-    parts.push(`赠送 ${formatBalanceAmount(snap.membership, snap.onDemandUsed)}`);
-  }
-  detailEl.textContent = parts.length > 0 ? parts.join(" · ") : "官方余额接口";
+  const balance = formatBalanceAmount(snap.membership, total);
+  setHeroValue("deepseek-hero-num", "deepseek-hero-unit", balance, "");
+  setTextIfChanged(stripPct, balance);
+  // 余额型：无进度条、无「无进度条/可用余额」类说明文案；金额本身即主读数
+  subEl.textContent = "";
 
   if (snap.message) {
     alertEl.textContent = snap.message;
@@ -619,140 +762,129 @@ function renderDeepSeek(state: PanelState): void {
   }
 }
 
-function formatMemGb(bytes: number): string {
-  return (bytes / (1024 * 1024 * 1024)).toFixed(1);
+/** 容量数值（GiB，一位小数）。 */
+function bytesToGbNumber(bytes: number): number {
+  return bytes / (1024 * 1024 * 1024);
 }
 
-function formatTemp(temp: number | null | undefined): string | null {
-  if (temp == null || Number.isNaN(temp)) return null;
-  return `${Math.round(temp)}°C`;
-}
-
-function setStatSub(id: string, text: string | null): void {
-  const el = $(id);
-  if (text == null) {
-    el.textContent = "";
-    el.classList.add("hidden");
-  } else {
-    el.textContent = text;
-    el.classList.remove("hidden");
+/** 已用 / 剩余，单位只写一次：`40.0 / 44.0 GB`。 */
+function formatUsedRemaining(
+  usedBytes: number | null | undefined,
+  remainingBytes: number | null | undefined,
+): string {
+  if (
+    usedBytes == null ||
+    remainingBytes == null ||
+    Number.isNaN(usedBytes) ||
+    Number.isNaN(remainingBytes)
+  ) {
+    return "—";
   }
+  return `${bytesToGbNumber(usedBytes).toFixed(1)} / ${bytesToGbNumber(remainingBytes).toFixed(1)} GB`;
+}
+
+function setNetValue(el: HTMLElement, value: string | null | undefined): void {
+  const text = value?.trim() || "—";
+  setTextIfChanged(el, text);
+  el.classList.toggle("is-empty", text === "—");
+}
+
+/** 系统轨进度；与供应商进度条共用 usageTone 色阶。 */
+function setSysTrack(
+  fillId: string,
+  percent: number | null | undefined,
+): void {
+  setProgressWidth(fillId, percent);
 }
 
 function renderSystem(state: PanelState): void {
   const sys = state.system;
   const hasData = !!sys.fetchedAt;
+  const cpuEl = $("sys-cpu-pct");
+  const gpuEl = $("sys-gpu-pct");
+  const memEl = $("sys-mem-text");
+  const diskEl = $("sys-disk-text");
+  const vpnEl = $("sys-vpn-ip");
 
   const cpuPct = hasData ? sys.cpuPercent : null;
-  $("sys-cpu-pct").textContent = formatPercent(cpuPct);
-  setStatBar("sys-cpu-bar", cpuPct);
-  setStatSub("sys-cpu-sub", formatTemp(sys.cpuTempC));
+  setTextIfChanged(cpuEl, formatPercent(cpuPct));
+  applyTone(cpuEl, usageTone(cpuPct));
+  setSysTrack("sys-cpu-fill", cpuPct);
 
   if (hasData && sys.gpuPercent != null) {
-    $("sys-gpu-pct").textContent = formatPercent(sys.gpuPercent);
-    setStatBar("sys-gpu-bar", sys.gpuPercent);
+    setTextIfChanged(gpuEl, formatPercent(sys.gpuPercent));
+    applyTone(gpuEl, usageTone(sys.gpuPercent));
+    setSysTrack("sys-gpu-fill", sys.gpuPercent);
   } else {
-    $("sys-gpu-pct").textContent = hasData ? "N/A" : "—";
-    setStatBar("sys-gpu-bar", null);
+    setTextIfChanged(gpuEl, hasData ? "N/A" : "—");
+    applyTone(gpuEl, "neutral");
+    setSysTrack("sys-gpu-fill", null);
   }
-  setStatSub("sys-gpu-sub", formatTemp(sys.gpuTempC));
 
   if (hasData && sys.memTotalBytes > 0) {
-    const memPct = (sys.memUsedBytes / sys.memTotalBytes) * 100;
-    $("sys-mem-pct").textContent = formatPercent(memPct);
-    setStatBar("sys-mem-bar", memPct);
-    $("sys-mem-sub").textContent = `${formatMemGb(sys.memUsedBytes)}/${formatMemGb(sys.memTotalBytes)} GB`;
-    $("sys-mem-sub").classList.remove("hidden");
+    // 后端已按 total−available 给出互补已用；此处钳制仅作防护
+    const used = Math.min(sys.memUsedBytes, sys.memTotalBytes);
+    const remaining = Math.max(0, sys.memTotalBytes - used);
+    const memPct = (used / sys.memTotalBytes) * 100;
+    setTextIfChanged(memEl, formatUsedRemaining(used, remaining));
+    // MEM 文字保持中性；进度条仍按比例色
+    applyTone(memEl, "neutral");
+    setSysTrack("sys-mem-fill", memPct);
   } else {
-    $("sys-mem-pct").textContent = "—";
-    setStatBar("sys-mem-bar", null);
-    $("sys-mem-sub").textContent = "—";
-    $("sys-mem-sub").classList.remove("hidden");
+    setTextIfChanged(memEl, "—");
+    applyTone(memEl, "neutral");
+    setSysTrack("sys-mem-fill", null);
   }
-}
 
-function pushLatencySample(lat: LatencySnapshot): void {
-  if (!lat.fetchedAt || lat.fetchedAt === lastLatencyFetchedAt) return;
-  lastLatencyFetchedAt = lat.fetchedAt;
-
-  if (lat.status === "ok" && lat.latencyMs != null) {
-    latencyHistory.push(lat.latencyMs);
+  if (
+    hasData &&
+    sys.diskUsedBytes != null &&
+    sys.diskAvailableBytes != null
+  ) {
+    const diskTotal = sys.diskUsedBytes + sys.diskAvailableBytes;
+    const diskPct = diskTotal > 0 ? (sys.diskUsedBytes / diskTotal) * 100 : null;
+    // 展示已用/剩余数值，不带「已用」「剩余」字样
+    setTextIfChanged(
+      diskEl,
+      formatUsedRemaining(sys.diskUsedBytes, sys.diskAvailableBytes),
+    );
+    // DISK 文字保持中性；进度条仍按比例色
+    applyTone(diskEl, "neutral");
+    setSysTrack("sys-disk-fill", diskPct);
   } else {
-    latencyHistory.push(null);
+    setTextIfChanged(diskEl, "—");
+    applyTone(diskEl, "neutral");
+    setSysTrack("sys-disk-fill", null);
   }
-  latencyHistoryHasReal = true;
-  while (latencyHistory.length > LATENCY_HISTORY_SIZE) {
-    latencyHistory.shift();
-  }
-}
 
-function placeholderSparkValues(count: number): number[] {
-  return Array.from({ length: count }, (_, i) => {
-    const wave = Math.sin(i * 0.65 + 1.2) * 0.22 + 0.38;
-    return Math.round(wave * 100);
-  });
-}
-
-function renderLatencySpark(highThreshold: number): void {
-  const container = $("latency-spark");
-  const slots = LATENCY_HISTORY_SIZE;
-  let values: (number | null)[];
-  let isPlaceholder = false;
-
-  if (latencyHistoryHasReal && latencyHistory.length > 0) {
-    const pad = slots - latencyHistory.length;
-    values = [...Array(Math.max(0, pad)).fill(null), ...latencyHistory];
+  // 有 VPN 时与 IP 同行显示；无 VPN 时隐藏整段，避免「VPN —」空胶囊
+  const vpnPart = $("net-vpn-part");
+  const vpn = hasData ? sys.vpnIp?.trim() : "";
+  if (vpn) {
+    setTextIfChanged(vpnEl, vpn);
+    vpnEl.classList.remove("is-empty");
+    vpnPart.classList.remove("hidden");
   } else {
-    values = placeholderSparkValues(slots);
-    isPlaceholder = true;
+    setTextIfChanged(vpnEl, "");
+    vpnEl.classList.remove("is-empty");
+    vpnPart.classList.add("hidden");
   }
-
-  const numeric = values.filter((v): v is number => v != null);
-  const maxMs = Math.max(highThreshold, ...numeric, 100);
-
-  // 增量更新柱子，避免每次 refresh 销毁重建造成闪烁。
-  while (container.children.length < slots) {
-    const bar = document.createElement("div");
-    bar.className = "spark-bar";
-    container.appendChild(bar);
-  }
-  while (container.children.length > slots) {
-    container.lastElementChild?.remove();
-  }
-  const bars = container.children;
-
-  values.forEach((ms, i) => {
-    const bar = bars[i] as HTMLElement | undefined;
-    if (!bar) return;
-    let height: string;
-    let empty = false;
-    let high = false;
-    let placeholder = false;
-    if (ms == null) {
-      empty = true;
-      height = "12%";
-    } else {
-      const pct = Math.max(10, Math.min(100, (ms / maxMs) * 100));
-      height = `${pct}%`;
-      high = !isPlaceholder && ms > highThreshold;
-      placeholder = isPlaceholder;
-    }
-    if (bar.style.height !== height) bar.style.height = height;
-    bar.classList.toggle("empty", empty);
-    bar.classList.toggle("high", high);
-    bar.classList.toggle("placeholder", placeholder);
-  });
 }
 
 /** 出口区域 + 公网 IP 的 title 文案；IP 缺失时不拼接假数据。 */
 function formatEgressTitle(
   regionLabel?: string | null,
   egressIp?: string | null,
+  vpnIp?: string | null,
 ): string {
-  const region = regionLabel?.trim() || "出口暂不可用";
+  const parts: string[] = [];
+  const vpn = vpnIp?.trim();
   const ip = egressIp?.trim();
-  if (!ip) return region;
-  return `${ip} · ${region}`;
+  const region = regionLabel?.trim();
+  if (vpn) parts.push(`VPN ${vpn}`);
+  if (ip) parts.push(`Public ${ip}`);
+  if (region) parts.push(region);
+  return parts.join(" · ");
 }
 
 function renderLatency(state: PanelState): void {
@@ -761,55 +893,46 @@ function renderLatency(state: PanelState): void {
   const regionEl = $("latency-region");
   const ipEl = $("latency-egress-ip");
   const egressWrap = $("latency-egress");
-  el.classList.remove("high");
-
-  if (lat.fetchedAt) {
-    pushLatencySample(lat);
-  }
+  el.classList.remove("high", "warn");
+  applyTone(el, "neutral");
 
   if (!lat.fetchedAt) {
-    el.textContent = "—";
-    regionEl.textContent = "—";
-    regionEl.classList.remove("muted-hint");
-    ipEl.textContent = "";
-    ipEl.hidden = true;
+    setTextIfChanged(el, "—");
+    setNetValue(regionEl, null);
+    regionEl.classList.add("muted-hint");
+    setNetValue(ipEl, null);
     egressWrap.title = "";
-    renderLatencySpark(state.highLatencyMs);
     return;
   }
 
-  const regionText = lat.regionLabel?.trim() || "出口暂不可用";
-  const ip = lat.egressIp?.trim() || "";
-  regionEl.textContent = regionText;
-  regionEl.classList.toggle(
-    "muted-hint",
-    regionText === "出口暂不可用" || regionText === "—",
+  const regionText = lat.regionLabel?.trim() || "—";
+  setNetValue(regionEl, regionText === "—" ? null : regionText);
+  regionEl.classList.toggle("muted-hint", !lat.regionLabel?.trim());
+  setNetValue(ipEl, lat.egressIp);
+  egressWrap.title = formatEgressTitle(
+    lat.regionLabel,
+    lat.egressIp,
+    state.system.vpnIp,
   );
-  if (ip) {
-    ipEl.textContent = ip;
-    ipEl.hidden = false;
-  } else {
-    ipEl.textContent = "";
-    ipEl.hidden = true;
-  }
-  egressWrap.title = formatEgressTitle(lat.regionLabel, lat.egressIp);
 
   if (lat.status !== "ok" || lat.latencyMs == null) {
-    el.textContent = lat.status === "timeout" ? "超时" : "错误";
-    el.classList.add("high");
-    renderLatencySpark(state.highLatencyMs);
+    setTextIfChanged(el, lat.status === "timeout" ? "超时" : "错误");
+    el.classList.add("high", "warn");
+    applyTone(el, "danger");
     return;
   }
 
-  el.textContent = `${lat.latencyMs} ms`;
+  setTextIfChanged(el, `${lat.latencyMs} ms`);
   if (lat.latencyMs > state.highLatencyMs) {
-    el.classList.add("high");
+    el.classList.add("high", "warn");
+    applyTone(el, "warn");
+  } else {
+    applyTone(el, "ok");
   }
-  renderLatencySpark(state.highLatencyMs);
 }
 
 function renderFooter(state: PanelState): void {
-  $("footer-auto").textContent = "Auto refresh";
+  $("footer-auto").textContent = "Auto";
   $("footer-updated").textContent = formatUpdated(latestFetchedAt(state));
 }
 
@@ -840,6 +963,92 @@ function renderPanel(state: PanelState): void {
     syncPanelScrollFade?.();
     syncSettingsScrollFade?.();
   });
+}
+
+function isDomVisible(el: HTMLElement): boolean {
+  if (el.classList.contains("hidden")) return false;
+  const style = getComputedStyle(el);
+  return style.display !== "none" && style.visibility !== "hidden";
+}
+
+/** 按子节点自然高度求和（避免 flex:1 撑满时 scrollHeight≈clientHeight） */
+function measureNaturalBlockHeight(el: HTMLElement): number {
+  const style = getComputedStyle(el);
+  const paddingY =
+    (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
+  const gap = parseFloat(style.rowGap || style.gap) || 0;
+  const kids = Array.from(el.children).filter(
+    (c): c is HTMLElement => c instanceof HTMLElement && isDomVisible(c),
+  );
+  if (kids.length === 0) return Math.ceil(paddingY);
+  let content = 0;
+  for (let i = 0; i < kids.length; i++) {
+    content += kids[i].getBoundingClientRect().height;
+    if (i < kids.length - 1) content += gap;
+  }
+  return Math.ceil(content + paddingY);
+}
+
+function readPanelMaxHeight(): number {
+  const raw = getComputedStyle(document.documentElement)
+    .getPropertyValue("--panel-max-height")
+    .trim();
+  const n = parseFloat(raw);
+  return Number.isFinite(n) && n > 0 ? n : PANEL_MAX_HEIGHT_FALLBACK;
+}
+
+/** 当前可见视图的内容高度（未 clamp） */
+function measureDesiredPanelHeight(): number {
+  const settings = $("view-settings");
+  const onSettings = !settings.classList.contains("view-hidden");
+  const view = onSettings ? settings : $("view-main");
+  let height = 0;
+  for (const child of Array.from(view.children)) {
+    if (!(child instanceof HTMLElement) || !isDomVisible(child)) continue;
+    if (
+      child.classList.contains("panel-body") ||
+      child.classList.contains("settings-body")
+    ) {
+      height += measureNaturalBlockHeight(child);
+    } else {
+      height += child.getBoundingClientRect().height;
+    }
+  }
+  return Math.ceil(height + PANEL_CHROME_PX);
+}
+
+let lastAppliedPanelHeight = 0;
+let panelResizeRaf = 0;
+
+function schedulePanelWindowResize(): void {
+  if (panelResizeRaf) cancelAnimationFrame(panelResizeRaf);
+  // 双 rAF：等 DOM/布局稳定后再量高
+  panelResizeRaf = requestAnimationFrame(() => {
+    panelResizeRaf = requestAnimationFrame(() => {
+      panelResizeRaf = 0;
+      void applyPanelWindowSize();
+    });
+  });
+}
+
+async function applyPanelWindowSize(): Promise<void> {
+  if (providerDragActive) return;
+  const desired = measureDesiredPanelHeight();
+  const maxH = readPanelMaxHeight();
+  const height = Math.max(PANEL_MIN_HEIGHT, Math.min(maxH, desired));
+  if (Math.abs(height - lastAppliedPanelHeight) < 0.5) {
+    syncPanelScrollFade?.();
+    syncSettingsScrollFade?.();
+    return;
+  }
+  try {
+    await getCurrentWindow().setSize(new LogicalSize(PANEL_WIDTH, height));
+    lastAppliedPanelHeight = height;
+  } catch (err) {
+    console.warn("panel setSize failed", err);
+  }
+  syncPanelScrollFade?.();
+  syncSettingsScrollFade?.();
 }
 
 let scheduledCursorMs: number | undefined;
@@ -940,6 +1149,7 @@ function showMain(): void {
   settings.setAttribute("aria-hidden", "true");
   main.classList.remove("view-hidden");
   main.removeAttribute("aria-hidden");
+  schedulePanelWindowResize();
   requestAnimationFrame(() => syncPanelScrollFade?.());
 }
 
@@ -951,6 +1161,7 @@ function showSettings(): void {
   settings.classList.remove("view-hidden");
   settings.removeAttribute("aria-hidden");
   void loadSettingsForm();
+  schedulePanelWindowResize();
   requestAnimationFrame(() => syncSettingsScrollFade?.());
 }
 
@@ -1167,12 +1378,13 @@ function bindProviderDragSort(): void {
   };
 
   const restoreOrder = (order: ProviderId[]) => {
-    const systemCard = $("card-system");
+    const secondaryBand = $("secondary-band");
     for (const id of order) {
       const node = providerDomNode(id);
       if (!node) continue;
-      overview.insertBefore(node, systemCard);
+      overview.insertBefore(node, secondaryBand);
     }
+    applyPrimaryProviderRoles();
   };
 
   /** 软锁：拦截 refresh / tray 失焦隐藏，但不改视觉 class（避免打断 card-appear）。 */
@@ -1215,6 +1427,11 @@ function bindProviderDragSort(): void {
     source.style.willChange = "";
     source.style.transformOrigin = "";
     source.style.boxShadow = "";
+    source.style.padding = "";
+    source.style.background = "";
+    source.style.border = "";
+    source.style.backdropFilter = "";
+    source.style.removeProperty("-webkit-backdrop-filter");
   };
 
   /** 拖拽中 source 已挂到 body：按占位符位置拼出可见顺序 */
@@ -1313,8 +1530,7 @@ function bindProviderDragSort(): void {
       overview.insertBefore(source, placeholder);
       placeholder.remove();
     } else if (!overview.contains(source)) {
-      const systemCard = $("card-system");
-      overview.insertBefore(source, systemCard);
+      overview.insertBefore(source, $("secondary-band"));
     }
     clearFloatStyles(source);
   };
@@ -1330,6 +1546,7 @@ function bindProviderDragSort(): void {
       merged.every((id, i) => id === full[i]);
     if (unchanged) {
       // DOM 已是目标序：勿再 applyBoardLayout，避免无谓重排闪烁
+      applyPrimaryProviderRoles();
       setDragLock(false);
       return;
     }
@@ -1338,6 +1555,8 @@ function bindProviderDragSort(): void {
     // 仅当乐观 DOM 与完整 order（含隐藏项槽位）不一致时才纠正
     if (panelState && !providerOrderMatchesDom(merged)) {
       applyBoardLayout(panelState);
+    } else {
+      applyPrimaryProviderRoles();
     }
 
     // 锁持续到写回完成，避免松手瞬间 refresh/focus 再跑 layout
@@ -1448,12 +1667,12 @@ function bindProviderDragSort(): void {
   const syncLiveOrder = (clientY: number) => {
     if (!drag?.started || drag.settling || !drag.placeholder) return;
     const { source, placeholder } = drag;
-    const systemCard = $("card-system");
+    const secondaryBand = $("secondary-band");
     const others = visibleProviderNodes().filter((n) => n !== source);
 
     if (others.length === 0) {
-      if (placeholder.nextElementSibling !== systemCard) {
-        overview.insertBefore(placeholder, systemCard);
+      if (placeholder.nextElementSibling !== secondaryBand) {
+        overview.insertBefore(placeholder, secondaryBand);
       }
       return;
     }
@@ -1467,7 +1686,7 @@ function bindProviderDragSort(): void {
       }
     }
 
-    const ref = insertBefore ?? systemCard;
+    const ref = insertBefore ?? secondaryBand;
     if (placeholder.nextElementSibling === ref) return;
 
     const animNodes = [...others, placeholder];
@@ -1655,34 +1874,6 @@ function bindScrollFade(el: HTMLElement): () => void {
 let syncPanelScrollFade: (() => void) | undefined;
 let syncSettingsScrollFade: (() => void) | undefined;
 
-function setCompactCollapsed(collapsed: boolean): void {
-  const section = $("cursor-section");
-  const btn = $("btn-compact-toggle");
-  const compact = $("cursor-compact");
-  const full = $("cursor-full");
-
-  section.classList.toggle("collapsed", collapsed);
-  btn.setAttribute("aria-expanded", String(!collapsed));
-  compact.classList.toggle("hidden", !collapsed);
-  full.classList.toggle("hidden", collapsed);
-
-  try {
-    localStorage.setItem(COMPACT_STORAGE_KEY, collapsed ? "1" : "0");
-  } catch {
-    /* 忽略 localStorage 不可用 */
-  }
-
-  requestAnimationFrame(() => syncPanelScrollFade?.());
-}
-
-function loadCompactState(): boolean {
-  try {
-    return localStorage.getItem(COMPACT_STORAGE_KEY) === "1";
-  } catch {
-    return false;
-  }
-}
-
 function loadProviderCollapsedMap(): Record<string, boolean> {
   try {
     const raw = localStorage.getItem(SETTINGS_PROVIDER_COLLAPSED_KEY);
@@ -1748,6 +1939,7 @@ function bindSettingsProviderCollapse(): void {
           section,
           !section.classList.contains("collapsed"),
         );
+        schedulePanelWindowResize();
         requestAnimationFrame(() => syncSettingsScrollFade?.());
       });
     });
@@ -1762,16 +1954,10 @@ function formatDiagnoseResult(p: LocalSessionProbe): string {
 }
 
 function bindUi(): void {
-  setCompactCollapsed(loadCompactState());
   bindSettingsProviderCollapse();
   bindProviderDragSort();
   syncPanelScrollFade = bindScrollFade($("panel-overview"));
   syncSettingsScrollFade = bindScrollFade($("settings-form"));
-
-  $("btn-compact-toggle").addEventListener("click", () => {
-    const section = $("cursor-section");
-    setCompactCollapsed(!section.classList.contains("collapsed"));
-  });
 
   $("btn-refresh").addEventListener("click", () => {
     void refreshAll();

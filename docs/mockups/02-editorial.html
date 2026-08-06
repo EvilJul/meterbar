@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>02 · 编辑排版 — Meterbar</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Libre+Baskerville:wght@400;700&family=Source+Sans+3:wght@400;500;600&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --paper: #f3efe6;
+      --ink: #1c1a17;
+      --mute: #6a645a;
+      --faint: #9a9286;
+      --rule: #d4cdc0;
+      --fill: #1c1a17;
+      --danger: #a33d2f;
+      --w: 360px;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      background:
+        linear-gradient(180deg, #e8e2d4 0%, #d9d2c2 100%);
+      font-family: "Source Sans 3", "PingFang SC", sans-serif;
+      color: var(--ink);
+      -webkit-font-smoothing: antialiased;
+    }
+    .scene-label {
+      position: fixed; top: 22px; left: 26px;
+      font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
+      color: #7a7368;
+    }
+    html.embed .scene-label { display: none; }
+    html.embed body { min-height: auto; padding: 20px 0; }
+
+    .panel {
+      width: var(--w);
+      background: var(--paper);
+      border-radius: 2px;
+      box-shadow:
+        0 1px 0 rgba(255,255,255,0.5) inset,
+        0 18px 40px rgba(60,50,30,0.18);
+      padding: 16px 18px 18px;
+    }
+    .mast {
+      display: flex; justify-content: space-between; align-items: baseline;
+      padding-bottom: 10px;
+      border-bottom: 1.5px solid var(--ink);
+    }
+    .brand {
+      font-family: "Libre Baskerville", Georgia, serif;
+      font-size: 15px; font-weight: 700; letter-spacing: -0.02em;
+    }
+    .tools { font-size: 11px; color: var(--mute); letter-spacing: 0.04em; }
+
+    .lead {
+      padding: 14px 0 12px;
+      border-bottom: 1px solid var(--rule);
+    }
+    .kicker {
+      font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase;
+      color: var(--mute); margin-bottom: 2px;
+    }
+    .lead-row {
+      display: flex; justify-content: space-between; align-items: flex-end;
+      gap: 12px;
+    }
+    .display {
+      font-family: "Libre Baskerville", Georgia, serif;
+      font-size: 48px; font-weight: 700; letter-spacing: -0.03em;
+      line-height: 0.95;
+    }
+    .display em {
+      font-style: normal; font-size: 20px; color: var(--mute);
+      margin-left: 2px;
+    }
+    .aside {
+      text-align: right; font-size: 12px; color: var(--mute); line-height: 1.35;
+      padding-bottom: 4px;
+    }
+    .aside strong {
+      display: block; color: var(--ink); font-weight: 600;
+      font-variant-numeric: tabular-nums;
+    }
+    .rule-bar {
+      margin-top: 12px; height: 1px; background: var(--rule); position: relative;
+    }
+    .rule-bar > i {
+      position: absolute; left: 0; top: -1px; height: 3px;
+      background: var(--fill);
+    }
+
+    .list { padding: 10px 0; border-bottom: 1px solid var(--rule); }
+    .item {
+      display: grid; grid-template-columns: 1fr auto; gap: 8px;
+      padding: 7px 0; align-items: baseline;
+    }
+    .item + .item { border-top: 1px dotted var(--rule); }
+    .iname { font-size: 13px; font-weight: 500; }
+    .ival {
+      font-size: 13px; font-variant-numeric: tabular-nums; font-weight: 600;
+    }
+    .isub {
+      grid-column: 1 / -1; font-size: 11px; color: var(--faint);
+      margin-top: -2px;
+    }
+    .thin {
+      height: 1px; background: var(--rule); margin: 4px 0 2px; position: relative;
+    }
+    .thin > i {
+      position: absolute; left: 0; top: 0; height: 1px; background: var(--ink);
+    }
+
+    .sys { padding-top: 12px; }
+    .sys-title {
+      font-family: "Libre Baskerville", Georgia, serif;
+      font-size: 12px; margin-bottom: 8px;
+    }
+    .grid2 {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 0 16px;
+    }
+    .cell { padding: 6px 0; border-top: 1px solid var(--rule); }
+    .cl {
+      font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
+      color: var(--faint);
+    }
+    .cv {
+      font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums;
+      margin-top: 2px;
+    }
+    .cv.warn { color: var(--danger); }
+    .chint { font-size: 10px; color: var(--faint); margin-top: 1px; }
+    .full { grid-column: 1 / -1; }
+    .lat-line {
+      display: flex; justify-content: space-between; align-items: baseline;
+      padding: 10px 0 6px; margin-top: 4px;
+      border-top: 1.5px solid var(--ink);
+    }
+    .lat-line .cl { font-size: 11px; letter-spacing: 0.06em; color: var(--mute); }
+    .lat-line .cv { font-size: 16px; margin: 0; }
+    .foot {
+      margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--rule);
+      font-size: 11px; color: var(--mute); line-height: 1.55;
+      font-variant-numeric: tabular-nums;
+    }
+    .foot span { color: var(--faint); }
+  </style>
+</head>
+<body>
+  <div class="scene-label">02 · Editorial</div>
+  <div class="panel" role="dialog" aria-label="Meterbar">
+    <header class="mast">
+      <div class="brand">Meterbar</div>
+      <div class="tools">REFRESH · PREFS</div>
+    </header>
+
+    <section class="lead">
+      <div class="kicker">Primary · Cursor</div>
+      <div class="lead-row">
+        <div class="display">63<em>%</em></div>
+        <div class="aside">
+          <strong>$70 / $70</strong>
+          本周期额度
+        </div>
+      </div>
+      <div class="rule-bar"><i style="width:63%"></i></div>
+    </section>
+
+    <section class="list">
+      <div class="item">
+        <span class="iname">Codex</span>
+        <span class="ival">26%</span>
+        <div class="thin"><i style="width:26%"></i></div>
+      </div>
+      <div class="item">
+        <span class="iname">DeepSeek</span>
+        <span class="ival">¥42.44</span>
+        <div class="isub">余额账户 · 不显示进度条</div>
+      </div>
+    </section>
+
+    <section class="sys">
+      <div class="sys-title">System</div>
+      <div class="grid2">
+        <div class="cell">
+          <div class="cl">CPU</div>
+          <div class="cv">20%</div>
+        </div>
+        <div class="cell">
+          <div class="cl">GPU</div>
+          <div class="cv warn">100%</div>
+        </div>
+        <div class="cell">
+          <div class="cl">MEM</div>
+          <div class="cv">40.0 / 44.0 GB</div>
+          <div class="chint">已用 / 剩余</div>
+        </div>
+        <div class="cell">
+          <div class="cl">DISK</div>
+          <div class="cv">629 / 1229 GB</div>
+          <div class="chint">已用 / 剩余</div>
+        </div>
+        <div class="cell full lat-line">
+          <span class="cl">Latency</span>
+          <span class="cv">605 ms</span>
+        </div>
+      </div>
+      <div class="foot">
+        <div><span>VPN</span> —</div>
+        <div><span>Public</span> 119.236.5.8</div>
+        <div><span>Region</span> Hong Kong</div>
+      </div>
+    </section>
+  </div>
+<script>if(location.hash==="#embed"||window.self!==window.top)document.documentElement.classList.add("embed");</script>
+</body>
+</html>

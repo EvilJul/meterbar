@@ -49,6 +49,9 @@ fn placeholder_system() -> SystemSnapshot {
         gpu_temp_c: None,
         mem_used_bytes: 0,
         mem_total_bytes: 0,
+        disk_used_bytes: None,
+        disk_available_bytes: None,
+        vpn_ip: None,
         fetched_at: String::new(),
     }
 }
