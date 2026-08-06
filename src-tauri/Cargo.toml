@@ -31,9 +31,11 @@ libc = "0.2"
 tauri-plugin-autostart = "2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-# 注意：不能 object_setClass 把 NSWindow 改成 NSPanel（实例大小 464≠456，debug 会断言）。
+# 注意：不能 object_setClass / contentView 迁到 NSPanel（前者 abort，后者 Tao panic）。
+# 全屏置顶：早设 Accessory + CanJoinAllApplications + ScreenSaver level（见 lib.rs）。
 objc2 = { version = "0.6", default-features = false }
 objc2-app-kit = { version = "0.3", default-features = false, features = [
+  "NSApplication",
   "NSWindow",
   "NSScreen",
   "NSEvent",

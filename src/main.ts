@@ -62,6 +62,7 @@ interface PanelState {
   system: SystemSnapshot;
   latency: LatencySnapshot;
   autoRefreshSec: number;
+  cpuGpuRefreshSec: number;
   systemRefreshSec: number;
   highLatencyMs: number;
   hasCursorToken: boolean;
@@ -79,6 +80,7 @@ interface ProviderVisibility {
 
 interface AppSettings {
   cursorRefreshSec: number;
+  cpuGpuRefreshSec: number;
   systemRefreshSec: number;
   latencyTarget: string;
   highLatencyMs: number;
@@ -118,7 +120,8 @@ let panelState: PanelState | null = null;
 /** 看板显隐/排序用的设置缓存；与后端 AppSettings 同步。 */
 let currentSettings: AppSettings = {
   cursorRefreshSec: 300,
-  systemRefreshSec: 15,
+  cpuGpuRefreshSec: 2,
+  systemRefreshSec: 10,
   latencyTarget: "https://cursor.com",
   highLatencyMs: 500,
   providerVisibility: { ...DEFAULT_VISIBILITY },
@@ -129,6 +132,7 @@ let currentSettings: AppSettings = {
 /** 主面板正在拖拽排序时为 true，避免 refresh 打断 DOM 顺序。 */
 let providerDragActive = false;
 let cursorTimer: number | undefined;
+let cpuGpuTimer: number | undefined;
 let systemTimer: number | undefined;
 let refreshing = false;
 /** 面板刚显示后的失焦保护窗口（毫秒时间戳） */
@@ -390,6 +394,7 @@ function normalizeSettings(raw: AppSettings): AppSettings {
   const vis = raw.providerVisibility ?? DEFAULT_VISIBILITY;
   return {
     cursorRefreshSec: raw.cursorRefreshSec,
+    cpuGpuRefreshSec: raw.cpuGpuRefreshSec,
     systemRefreshSec: raw.systemRefreshSec,
     latencyTarget: raw.latencyTarget,
     highLatencyMs: raw.highLatencyMs,
@@ -1052,11 +1057,15 @@ async function applyPanelWindowSize(): Promise<void> {
 }
 
 let scheduledCursorMs: number | undefined;
+let scheduledCpuGpuMs: number | undefined;
 let scheduledSystemMs: number | undefined;
 
 function scheduleAutoRefresh(state: PanelState): void {
   const cursorMs = Math.max(60, state.autoRefreshSec) * 1000;
-  const systemMs = Math.min(30, Math.max(10, state.systemRefreshSec)) * 1000;
+  const cpuGpuMs =
+    Math.min(10, Math.max(1, state.cpuGpuRefreshSec ?? 2)) * 1000;
+  const systemMs =
+    Math.min(60, Math.max(5, state.systemRefreshSec ?? 10)) * 1000;
 
   // 间隔未变时不要重置 timer，避免每次 render 打断计时并叠加刷新感。
   if (scheduledCursorMs !== cursorMs) {
@@ -1065,6 +1074,14 @@ function scheduleAutoRefresh(state: PanelState): void {
     cursorTimer = window.setInterval(() => {
       void refreshProvidersOnly();
     }, cursorMs);
+  }
+
+  if (scheduledCpuGpuMs !== cpuGpuMs) {
+    if (cpuGpuTimer != null) window.clearInterval(cpuGpuTimer);
+    scheduledCpuGpuMs = cpuGpuMs;
+    cpuGpuTimer = window.setInterval(() => {
+      void refreshCpuGpuOnly();
+    }, cpuGpuMs);
   }
 
   if (scheduledSystemMs !== systemMs) {
@@ -1129,16 +1146,36 @@ async function refreshDeepSeekOnly(): Promise<void> {
   }
 }
 
-async function refreshSystemAndLatency(): Promise<void> {
+async function refreshCpuGpuOnly(): Promise<void> {
   try {
-    await Promise.all([
-      invoke<SystemSnapshot>("refresh_system"),
-      invoke<LatencySnapshot>("refresh_latency"),
-    ]);
+    await invoke<SystemSnapshot>("refresh_system_fast");
     const state = await invoke<PanelState>("get_panel_state");
     renderPanel(state);
   } catch (err) {
-    console.error("system/latency refresh failed", err);
+    console.error("cpu/gpu refresh failed", err);
+  }
+}
+
+async function refreshSystemAndLatency(): Promise<void> {
+  // Latency 与慢拍（内存/磁盘/VPN）并行；慢拍先返回就立刻 render，不 await latency。
+  const latencyP = invoke<LatencySnapshot>("refresh_latency").catch((err) => {
+    console.error("latency refresh failed", err);
+  });
+
+  try {
+    await invoke<SystemSnapshot>("refresh_system");
+    const state = await invoke<PanelState>("get_panel_state");
+    renderPanel(state);
+  } catch (err) {
+    console.error("system refresh failed", err);
+  }
+
+  try {
+    await latencyP;
+    const state = await invoke<PanelState>("get_panel_state");
+    renderPanel(state);
+  } catch (err) {
+    console.error("latency panel update failed", err);
   }
 }
 
@@ -1787,6 +1824,9 @@ async function loadSettingsForm(): Promise<void> {
     ($("cursor-refresh-input") as HTMLInputElement).value = String(
       settings.cursorRefreshSec,
     );
+    ($("cpu-gpu-refresh-input") as HTMLInputElement).value = String(
+      settings.cpuGpuRefreshSec,
+    );
     ($("system-refresh-input") as HTMLInputElement).value = String(
       settings.systemRefreshSec,
     );
@@ -2226,6 +2266,9 @@ function bindUi(): void {
     const patch = {
       cursorRefreshSec: Number(
         ($("cursor-refresh-input") as HTMLInputElement).value,
+      ),
+      cpuGpuRefreshSec: Number(
+        ($("cpu-gpu-refresh-input") as HTMLInputElement).value,
       ),
       systemRefreshSec: Number(
         ($("system-refresh-input") as HTMLInputElement).value,

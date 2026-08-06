@@ -23,8 +23,8 @@ const MENU_BAR_OFFSET_LOGICAL: f64 = 28.0;
 
 /// 面板最近一次 show 的时间戳（毫秒），用于忽略紧随其后的失焦。
 static PANEL_SHOWN_AT_MS: AtomicU64 = AtomicU64::new(0);
-/// 全屏 Space 下 show→focus 时序更慢，grace 略放宽避免刚弹出就被 hide。
-const BLUR_GRACE_MS: u64 = 600;
+/// 全屏 /「点壁纸显示桌面」后 show→focus 抖动更久，grace 放宽避免刚弹出就被 hide。
+const BLUR_GRACE_MS: u64 = 1200;
 /// 主面板正在拖拽排序时抑制失焦 hide，避免拖到一半窗口被关掉。
 static PANEL_DRAG_ACTIVE: AtomicBool = AtomicBool::new(false);
 
@@ -295,9 +295,9 @@ const METERBAR_TRAY_ID: &str = "meterbar";
 
 /// 每次 show/toggle 重算面板位置。
 ///
-/// macOS：优先 status item 所在 NSScreen（点哪块菜单栏就锚哪块），
-/// 全屏时其次 `NSScreen.main`（菜单栏焦点屏），最后才用 mouse。
-/// 直接 `setFrameTopLeftPoint`；tao tray/cursor 在全屏 Space 下不可靠。
+/// macOS：以「被点击的 status item 窗口 / click tray_rect」定屏为不变量；
+/// 禁止用全局唯一 `NSStatusItem.button.window`（多屏镜像菜单栏时常锚到主屏那份）。
+/// 无 click 信息时：全屏 menubar 焦点屏 → mouse →（弱）status item。
 /// 非 macOS 或 AppKit 失败时退回 tao 逻辑。
 fn position_panel_near_tray(
     app: &tauri::AppHandle,
@@ -306,7 +306,7 @@ fn position_panel_near_tray(
 ) {
     #[cfg(target_os = "macos")]
     {
-        if position_panel_via_appkit(app, window) {
+        if position_panel_via_appkit(app, window, tray_rect) {
             return;
         }
         eprintln!("[meterbar] appkit position unavailable, falling back to tao");
@@ -397,20 +397,64 @@ fn nsscreen_same(
         && (fa.size.height - fb.size.height).abs() < 0.5
 }
 
-/// status item window 几何（Send）：用于在 NSScreen::screens 里回查所在屏。
+/// 点击事件里的 tray 物理矩形（tray-icon 按 **被点击窗口** 的 backingScaleFactor 编码）。
+fn tray_event_physical(tray_rect: &Rect) -> Option<(f64, f64, f64, f64)> {
+    let (x, y) = match tray_rect.position {
+        Position::Physical(p) => (p.x as f64, p.y as f64),
+        Position::Logical(_) => return None,
+    };
+    let (w, h) = match tray_rect.size {
+        Size::Physical(s) => (s.width as f64, s.height as f64),
+        Size::Logical(_) => return None,
+    };
+    if w <= 1.0 || h <= 1.0 {
+        return None;
+    }
+    Some((x, y, w, h))
+}
+
+/// 用候选屏 scale 把 tray 物理坐标还原为 Cocoa 逻辑点，仅校验中心 X + 图标高度。
+/// 返回 (anchor_x, score)；score 越小越像 22pt 菜单栏图标。
+#[cfg_attr(not(test), allow(dead_code))]
+fn cocoa_tray_hit_on_screen(
+    screen_x: f64,
+    screen_w: f64,
+    scale: f64,
+    tray_phys_x: f64,
+    tray_phys_w: f64,
+    tray_phys_h: f64,
+) -> Option<(f64, f64)> {
+    if scale <= 0.0 {
+        return None;
+    }
+    let logical_h = tray_phys_h / scale;
+    if logical_h < 8.0 || logical_h > 48.0 {
+        return None;
+    }
+    let logical_x = tray_phys_x / scale;
+    let logical_w = tray_phys_w / scale;
+    let cx = logical_x + logical_w / 2.0;
+    if cx >= screen_x && cx < screen_x + screen_w {
+        let score = (logical_h - TRAY_ICON_LOGICAL_HEIGHT).abs();
+        Some((cx, score))
+    } else {
+        None
+    }
+}
+
+/// status item window 几何（Send）：仅作弱回退；多屏时常是主屏那一份镜像。
 #[cfg(target_os = "macos")]
 #[derive(Clone, Copy, Debug)]
 struct StatusItemGeom {
     anchor_x: f64,
-    /// status item window.screen.frame.origin（Cocoa）
     screen_x: f64,
     screen_y: f64,
     screen_w: f64,
     screen_h: f64,
 }
 
-/// 从 tray-icon 的 NSStatusItem 取 button.window.screen 几何 + 锚点 X。
-/// `with_inner_tray_icon` 要求返回值 Send，故不直接带回 Retained<NSScreen>。
+/// 从 tray-icon 的**唯一** NSStatusItem 取 button.window.screen。
+/// 注意：多屏「每屏菜单栏各一份」时，这通常只反映主屏/全局那份，不能代表点击目标。
 #[cfg(target_os = "macos")]
 fn appkit_status_item_geom(app: &tauri::AppHandle) -> Option<StatusItemGeom> {
     use objc2::MainThreadMarker;
@@ -462,12 +506,81 @@ fn appkit_screen_matching_frame(
     None
 }
 
-/// 选锚屏：status item →（mouse≠main 时）main → mouse → main fallback。
-/// 返回 (screen, anchor_x, via)。
+/// 点击当下的 NSEvent.window：tray-icon 用它生成 rect，多屏时应是被点的那份 status item 窗。
+#[cfg(target_os = "macos")]
+fn appkit_click_event_status_window(
+    mtm: objc2::MainThreadMarker,
+) -> Option<(objc2::rc::Retained<objc2_app_kit::NSScreen>, f64)> {
+    use objc2_app_kit::NSApplication;
+
+    let app = NSApplication::sharedApplication(mtm);
+    let event = app.currentEvent()?;
+    let window = event.window(mtm)?;
+    let screen = window.screen()?;
+    let wf = window.frame();
+    // status item 窗高度通常很小；排除我们自己的面板窗误命中。
+    if wf.size.height > 80.0 {
+        return None;
+    }
+    let anchor_x = wf.origin.x + wf.size.width / 2.0;
+    Some((screen, anchor_x))
+}
+
+/// 用 click tray_rect 的物理坐标 + 各屏 scale 选屏（只信 X；Y 经 pixels_high 翻转不可靠）。
+#[cfg(target_os = "macos")]
+fn appkit_screen_from_tray_rect(
+    mtm: objc2::MainThreadMarker,
+    tray_rect: &Rect,
+) -> Option<(objc2::rc::Retained<objc2_app_kit::NSScreen>, f64)> {
+    use objc2_app_kit::NSScreen;
+
+    let (px, _py, pw, ph) = tray_event_physical(tray_rect)?;
+    let screens = NSScreen::screens(mtm);
+    let mut best: Option<(f64, objc2::rc::Retained<objc2_app_kit::NSScreen>, f64)> = None;
+    let count = screens.count();
+    for i in 0..count {
+        let screen = screens.objectAtIndex(i);
+        let f = screen.frame();
+        let scale = screen.backingScaleFactor();
+        if let Some((anchor_x, score)) =
+            cocoa_tray_hit_on_screen(f.origin.x, f.size.width, scale, px, pw, ph)
+        {
+            let replace = best
+                .as_ref()
+                .is_none_or(|(best_score, ..)| score < *best_score);
+            if replace {
+                eprintln!(
+                    "[meterbar] tray_rect_hit screen={} scale={:.2} phys=({:.1},{:.1})x({:.1}x{:.1}) anchor_x={:.1} score={:.2}",
+                    screen.localizedName(),
+                    scale,
+                    px,
+                    _py,
+                    pw,
+                    ph,
+                    anchor_x,
+                    score
+                );
+                best = Some((score, screen, anchor_x));
+            }
+        }
+    }
+    best.map(|(_, screen, anchor_x)| (screen, anchor_x))
+}
+
+/// 选锚屏（不变量：点哪块 status item，面板就在哪块物理屏菜单栏下）。
+///
+/// 优先级：
+/// 1. click `tray_rect` 按各屏 scale 解码（tray-icon 在 mouseUp 时用 **event.window** 编码，最可靠）
+/// 2. `NSApp.currentEvent.window`（同一次事件循环内可能仍是点击窗；post_show 时通常已失效）
+/// 3. 全屏 menubar 焦点屏（mouse≠main）
+/// 4. mouse 所在屏
+/// 5. 全局 NSStatusItem（弱回退；多屏镜像菜单栏时常是主屏那份）
+/// 6. main
 #[cfg(target_os = "macos")]
 fn appkit_resolve_anchor_screen(
     app: &tauri::AppHandle,
     mtm: objc2::MainThreadMarker,
+    tray_rect: Option<Rect>,
     log_screens: bool,
 ) -> Option<(objc2::rc::Retained<objc2_app_kit::NSScreen>, f64, &'static str)> {
     use objc2_app_kit::{NSEvent, NSScreen};
@@ -512,6 +625,11 @@ fn appkit_resolve_anchor_screen(
         appkit_screen_matching_frame(mtm, g.screen_x, g.screen_y, g.screen_w, g.screen_h)
             .map(|s| (s, g.anchor_x))
     });
+    let click_event = appkit_click_event_status_window(mtm);
+    let click_rect = tray_rect
+        .as_ref()
+        .and_then(|r| appkit_screen_from_tray_rect(mtm, r));
+
     let mouse_name = mouse_screen
         .as_ref()
         .map(|s| s.localizedName().to_string())
@@ -524,18 +642,50 @@ fn appkit_resolve_anchor_screen(
         .as_ref()
         .map(|(s, _)| s.localizedName().to_string())
         .unwrap_or_else(|| "-".into());
+    let click_event_name = click_event
+        .as_ref()
+        .map(|(s, _)| s.localizedName().to_string())
+        .unwrap_or_else(|| "-".into());
+    let click_rect_name = click_rect
+        .as_ref()
+        .map(|(s, _)| s.localizedName().to_string())
+        .unwrap_or_else(|| "-".into());
     let menubar_focus_mismatch = match (&main, &mouse_screen) {
         (Some(m), Some(ms)) => !nsscreen_same(m, ms),
         _ => false,
     };
-    // 粗判：mouse 与 main 不一致时，多半处于全屏菜单栏焦点与内容屏分离。
+
+    // 诊断：全局 status item 与点击目标不一致时，旧逻辑会把副屏点击锚到主屏。
+    if let (Some((status_s, _)), Some((click_s, _))) = (&status_screen, &click_event) {
+        if !nsscreen_same(status_s, click_s) {
+            eprintln!(
+                "[meterbar] status_item_mismatch status={} click_event={} (ignoring global NSStatusItem)",
+                status_s.localizedName(),
+                click_s.localizedName()
+            );
+        }
+    } else if let (Some((status_s, _)), Some((click_s, _))) = (&status_screen, &click_rect) {
+        if !nsscreen_same(status_s, click_s) {
+            eprintln!(
+                "[meterbar] status_item_mismatch status={} click_rect={} (ignoring global NSStatusItem)",
+                status_s.localizedName(),
+                click_s.localizedName()
+            );
+        }
+    }
+
     eprintln!(
-        "[meterbar] screen_pick mouse=({:.1},{:.1}) mouse_screen={mouse_name} main={main_name} status_item={status_name} menubar_focus_mismatch={menubar_focus_mismatch}",
-        mouse.x, mouse.y
+        "[meterbar] screen_pick mouse=({:.1},{:.1}) mouse_screen={mouse_name} main={main_name} status_item={status_name} click_event={click_event_name} click_rect={click_rect_name} menubar_focus_mismatch={menubar_focus_mismatch} has_tray_rect={}",
+        mouse.x,
+        mouse.y,
+        tray_rect.is_some()
     );
 
-    if let Some((screen, anchor_x)) = status_screen {
-        return Some((screen, anchor_x, "status_item_screen"));
+    if let Some((screen, anchor_x)) = click_rect {
+        return Some((screen, anchor_x, "click_tray_rect"));
+    }
+    if let Some((screen, anchor_x)) = click_event {
+        return Some((screen, anchor_x, "click_event_window"));
     }
 
     // 全屏常见：tray 点在有菜单栏焦点的屏（main），mouseLocation 仍落在另一块 content 屏。
@@ -549,16 +699,28 @@ fn appkit_resolve_anchor_screen(
         return Some((screen, mouse.x, "nsevent_mouse"));
     }
 
+    if let Some((screen, anchor_x)) = status_screen {
+        eprintln!(
+            "[meterbar] weak_fallback status_item_screen={}",
+            screen.localizedName()
+        );
+        return Some((screen, anchor_x, "status_item_screen"));
+    }
+
     main.map(|s| (s, mouse.x, "main_screen_fallback"))
 }
 
-/// AppKit 真源：status item / 菜单栏屏 → visibleFrame 顶边锚面板。
+/// AppKit：按点击 status item 所在屏的 visibleFrame 顶边锚面板。
 /// 返回 true 表示已成功设置 frame。
 #[cfg(target_os = "macos")]
-fn position_panel_via_appkit(app: &tauri::AppHandle, window: &WebviewWindow) -> bool {
+fn position_panel_via_appkit(
+    app: &tauri::AppHandle,
+    window: &WebviewWindow,
+    tray_rect: Option<Rect>,
+) -> bool {
     use objc2::MainThreadMarker;
     use objc2_app_kit::NSWindow;
-    use objc2_foundation::NSPoint;
+    use objc2_foundation::{NSPoint, NSRect};
 
     let Ok(ns_window_ptr) = window.ns_window() else {
         return false;
@@ -571,7 +733,9 @@ fn position_panel_via_appkit(app: &tauri::AppHandle, window: &WebviewWindow) -> 
     };
 
     let mouse = objc2_app_kit::NSEvent::mouseLocation();
-    let Some((screen, anchor_x, via)) = appkit_resolve_anchor_screen(app, mtm, true) else {
+    let Some((screen, anchor_x, via)) =
+        appkit_resolve_anchor_screen(app, mtm, tray_rect, true)
+    else {
         return false;
     };
 
@@ -598,7 +762,6 @@ fn position_panel_via_appkit(app: &tauri::AppHandle, window: &WebviewWindow) -> 
     );
     // Cocoa：top_y 是顶边 Y；frame.origin.y 是底边。用 setFrame 强制整窗落到锚点屏。
     let origin_y = top_y - panel_h;
-    use objc2_foundation::NSRect;
     let dest = NSRect::new(NSPoint::new(x, origin_y), panel_size);
     ns_window.setFrame_display(dest, false);
 
@@ -628,14 +791,17 @@ fn position_panel_via_appkit(app: &tauri::AppHandle, window: &WebviewWindow) -> 
     true
 }
 
-/// show / orderFront / set_focus 之后：强制按 status item 屏再钉一次 frame。
+/// show / orderFront / set_focus 之后：强制按**同一次点击**的锚屏再钉一次 frame。
 ///
 /// 注意：`NSWindow.screen` / frame 中心只能证明坐标落在哪块物理屏，**不能**证明
-/// Space 是否正确。旧逻辑仅在「中心不在目标屏」时纠正，会在
-/// `MoveToActiveSpace` 把窗口拽到副屏全屏 Space、但 frame 仍短暂留在 Built-in
-/// 时误报 `post_show ok`。因此这里始终 re-anchor。
+/// Space 是否正确。必须传入原始 `tray_rect`，否则 post_show 会丢掉点击信息、
+/// 退回全局 NSStatusItem 并再次锚错屏。
 #[cfg(target_os = "macos")]
-fn correct_panel_frame_after_show(app: &tauri::AppHandle, window: &WebviewWindow) {
+fn correct_panel_frame_after_show(
+    app: &tauri::AppHandle,
+    window: &WebviewWindow,
+    tray_rect: Option<Rect>,
+) {
     use objc2::MainThreadMarker;
     use objc2_app_kit::NSWindow;
 
@@ -649,7 +815,7 @@ fn correct_panel_frame_after_show(app: &tauri::AppHandle, window: &WebviewWindow
         return;
     };
 
-    let Some((target, _, via)) = appkit_resolve_anchor_screen(app, mtm, false) else {
+    let Some((target, _, via)) = appkit_resolve_anchor_screen(app, mtm, tray_rect, false) else {
         return;
     };
 
@@ -680,7 +846,7 @@ fn correct_panel_frame_after_show(app: &tauri::AppHandle, window: &WebviewWindow
         actual_before.size.width,
         actual_before.size.height
     );
-    let _ = position_panel_via_appkit(app, window);
+    let _ = position_panel_via_appkit(app, window, tray_rect);
     let actual_after = ns_window.frame();
     let after_screen = ns_window
         .screen()
@@ -697,15 +863,18 @@ fn correct_panel_frame_after_show(app: &tauri::AppHandle, window: &WebviewWindow
 
 /// 让面板尽量浮在其他 App 的全屏 Space 上，且**留在我们钉好的物理屏**。
 ///
-/// Tauri 的主窗口是 `NSWindow`（非 `NSPanel`）。不能用 `object_setClass` 强转：
-/// 当前 SDK 上实例大小 NSWindow=464 / NSPanel=456，会触发 objc2 debug 断言并 abort。
-/// 可行路径：合法 collectionBehavior + 抬高 level + `orderFrontRegardless`。
-/// tiling 互斥位必须恰好其一，否则 `_validateCollectionBehavior:` 会断言。
+/// Apple DTS 完整配方含真正的 `NSPanel` + `NonactivatingPanel`。Tauri/Tao 主窗
+/// 是 `NSWindow`：`object_setClass` 会因实例大小不同 abort；把 contentView 迁走
+/// 会让 Tao 在 `contentView().unwrap()` 处 panic。因此这里落地 DTS 中可在
+/// **现有 NSWindow** 上生效的部分；真正 NSPanel 需在窗口创建期替换（后续大改）。
 ///
-/// **禁止 `MoveToActiveSpace`**：多屏 +「副屏全屏 / 主屏点 tray」时，它会在
-/// orderFront 时把窗口拽到副屏的全屏 Space，而 frame 日志仍可能短暂显示 Built-in，
-/// 造成「算法自以为对、肉眼在副屏」的错屏。改用 `CanJoinAllSpaces`，由我们
-/// 按 status item 屏 `setFrame`，窗口留在锚点屏。
+/// 当前组合：
+/// - Accessory / LSUIElement（进程早设 + Info.plist）
+/// - `CanJoinAllSpaces | CanJoinAllApplications | FullScreenAuxiliary | Stationary`
+/// - level = `NSScreenSaverWindowLevel`（PopUpMenu/Floating 会被原生全屏压住）
+/// - `orderFrontRegardless`；show 后重钉 level（防 alwaysOnTop 打回 Floating）
+///
+/// **禁止 `MoveToActiveSpace`**：多屏错 Space。tiling 互斥位必须恰好其一。
 #[cfg(target_os = "macos")]
 fn configure_panel_for_fullscreen_spaces(window: &WebviewWindow) {
     let Ok(ns_window_ptr) = window.ns_window() else {
@@ -715,36 +884,37 @@ fn configure_panel_for_fullscreen_spaces(window: &WebviewWindow) {
         return;
     }
 
-    use objc2_app_kit::{NSPopUpMenuWindowLevel, NSWindow, NSWindowCollectionBehavior};
+    use objc2_app_kit::{NSScreenSaverWindowLevel, NSWindow, NSWindowCollectionBehavior};
 
     unsafe {
         let ns_window = &*(ns_window_ptr as *const NSWindow);
 
         let mut behavior = ns_window.collectionBehavior();
-        // 与 MoveToActiveSpace 互斥：不要跟随「当前全屏 Space」跨屏迁移。
         behavior.remove(NSWindowCollectionBehavior::MoveToActiveSpace);
         behavior.insert(NSWindowCollectionBehavior::CanJoinAllSpaces);
-        // Managed / Transient / Stationary 三选一
+        // 跨 App 全屏 Space（仅 CanJoinAllSpaces 不够，见 Apple DTS）。
+        behavior.insert(NSWindowCollectionBehavior::CanJoinAllApplications);
+        // Managed / Transient / Stationary 三选一。
+        // Stationary：不受 Exposé /「显示桌面」推开；进全屏 Space 靠
+        // CanJoinAllApplications + FullScreenAuxiliary，不靠 MoveToActiveSpace。
         behavior.remove(NSWindowCollectionBehavior::Managed);
-        behavior.remove(NSWindowCollectionBehavior::Stationary);
-        behavior.insert(NSWindowCollectionBehavior::Transient);
+        behavior.remove(NSWindowCollectionBehavior::Transient);
+        behavior.insert(NSWindowCollectionBehavior::Stationary);
         behavior.remove(NSWindowCollectionBehavior::ParticipatesInCycle);
         behavior.insert(NSWindowCollectionBehavior::IgnoresCycle);
-        // FullScreen* 三选一
         behavior.remove(NSWindowCollectionBehavior::FullScreenPrimary);
         behavior.remove(NSWindowCollectionBehavior::FullScreenNone);
         behavior.insert(NSWindowCollectionBehavior::FullScreenAuxiliary);
-        // FullScreenAllowsTiling / DisallowsTiling 必须恰好其一，否则断言。
         behavior.remove(NSWindowCollectionBehavior::FullScreenAllowsTiling);
         behavior.insert(NSWindowCollectionBehavior::FullScreenDisallowsTiling);
         ns_window.setCollectionBehavior(behavior);
 
-        // alwaysOnTop 只有 Floating(3)，全屏内容仍可能压住；用弹出菜单级。
-        ns_window.setLevel(NSPopUpMenuWindowLevel);
+        // PopUpMenu(101) 仍可能被原生全屏压住；DTS 验证用 ScreenSaver(1000)。
+        ns_window.setLevel(NSScreenSaverWindowLevel);
         ns_window.setHidesOnDeactivate(false);
         eprintln!(
-            "[meterbar] collectionBehavior=CanJoinAllSpaces|Transient|FullScreenAuxiliary|DisallowsTiling (no MoveToActiveSpace) level={}",
-            NSPopUpMenuWindowLevel
+            "[meterbar] collectionBehavior=CanJoinAllSpaces|CanJoinAllApplications|Stationary|FullScreenAuxiliary|DisallowsTiling (no MoveToActiveSpace) level={} (NSWindow path)",
+            NSScreenSaverWindowLevel
         );
     }
 }
@@ -757,11 +927,45 @@ fn order_panel_front(window: &WebviewWindow) {
     if ns_window_ptr.is_null() {
         return;
     }
-    use objc2_app_kit::NSWindow;
+    use objc2_app_kit::{NSScreenSaverWindowLevel, NSWindow};
     unsafe {
         let ns_window = &*(ns_window_ptr as *const NSWindow);
+        // show/set_focus 后 Tao alwaysOnTop 可能把 level 打回 Floating(3)。
+        ns_window.setLevel(NSScreenSaverWindowLevel);
         ns_window.orderFrontRegardless();
+        ns_window.makeKeyAndOrderFront(None);
     }
+}
+
+/// 面板是否「真正在前台可交互」：不能只信 tauri is_visible。
+/// 「点壁纸显示桌面」后窗口常仍 is_visible=true，但 occlusion 已不可见 / 非 key。
+#[cfg(target_os = "macos")]
+fn panel_is_effectively_shown(window: &WebviewWindow) -> bool {
+    let focused = window.is_focused().unwrap_or(false);
+    let Ok(ns_window_ptr) = window.ns_window() else {
+        return window.is_visible().unwrap_or(false) && focused;
+    };
+    if ns_window_ptr.is_null() {
+        return window.is_visible().unwrap_or(false) && focused;
+    }
+    use objc2_app_kit::{NSWindow, NSWindowOcclusionState};
+    unsafe {
+        let ns_window = &*(ns_window_ptr as *const NSWindow);
+        let visible = ns_window.isVisible();
+        let occlusion_visible = ns_window
+            .occlusionState()
+            .contains(NSWindowOcclusionState::Visible);
+        let key = ns_window.isKeyWindow();
+        eprintln!(
+            "[meterbar] panel_effective visible={visible} occlusion_visible={occlusion_visible} key={key} focused={focused}"
+        );
+        visible && occlusion_visible && (key || focused)
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn panel_is_effectively_shown(window: &WebviewWindow) -> bool {
+    window.is_visible().unwrap_or(false) && window.is_focused().unwrap_or(false)
 }
 
 fn show_panel(app: &tauri::AppHandle, tray_rect: Option<Rect>) {
@@ -773,18 +977,24 @@ fn show_panel(app: &tauri::AppHandle, tray_rect: Option<Rect>) {
     configure_panel_for_fullscreen_spaces(&window);
     // show 前钉一次；show / orderFront / set_focus 后再强制钉到 status item 屏。
     position_panel_near_tray(app, &window, tray_rect);
+    // 尽早开 grace，覆盖 show→focus 期间的 Focused(false)（显示桌面收窗后尤其密集）。
     mark_panel_shown();
     let show_res = window.show();
     position_panel_near_tray(app, &window, tray_rect);
     #[cfg(target_os = "macos")]
     {
         order_panel_front(&window);
-        correct_panel_frame_after_show(app, &window);
+        correct_panel_frame_after_show(app, &window, tray_rect);
     }
     // 需要 key 窗口才能靠 Focused(false) 点外关闭；Accessory 下通常不抢 Dock。
     let focus_res = window.set_focus();
     #[cfg(target_os = "macos")]
-    correct_panel_frame_after_show(app, &window);
+    {
+        order_panel_front(&window);
+        correct_panel_frame_after_show(app, &window, tray_rect);
+    }
+    // focus 完成后再刷一次 grace，避免刚获得 key 又被系统抢焦立刻 hide。
+    mark_panel_shown();
     eprintln!(
         "[meterbar] show_panel show={show_res:?} focus={focus_res:?} visible={:?} focused={:?}",
         window.is_visible(),
@@ -794,6 +1004,7 @@ fn show_panel(app: &tauri::AppHandle, tray_rect: Option<Rect>) {
 
 fn hide_panel_if_blurred(window: &WebviewWindow) {
     if !should_hide_on_blur() {
+        eprintln!("[meterbar] hide_panel skipped (blur grace / drag)");
         return;
     }
     eprintln!("[meterbar] hide_panel on blur");
@@ -806,19 +1017,41 @@ fn toggle_panel(app: &tauri::AppHandle, tray_rect: Option<Rect>) {
         return;
     };
 
-    // 全屏 Space 上 is_visible 可能仍为 true（窗口在别的 Space），不能只靠 visible 决定 hide。
-    let visible = window.is_visible().unwrap_or(false);
-    let focused = window.is_focused().unwrap_or(false);
-    eprintln!("[meterbar] tray toggle visible={visible} focused={focused}");
-    if visible && focused {
+    // 显示桌面 / 全屏 Space：is_visible 可能仍为 true 但实际不可见 → 必须走 show。
+    let effectively_shown = panel_is_effectively_shown(&window);
+    eprintln!(
+        "[meterbar] tray toggle effectively_shown={effectively_shown} visible={:?} focused={:?}",
+        window.is_visible(),
+        window.is_focused()
+    );
+    if effectively_shown {
         let _ = window.hide();
     } else {
         show_panel(app, tray_rect);
     }
 }
 
+/// 在 Tauri 建窗之前把激活策略打成 Accessory。
+/// setup() 里再设往往已晚（窗口已按 Regular 创建）。Info.plist LSUIElement 覆盖 .app 启动。
+#[cfg(target_os = "macos")]
+fn apply_accessory_activation_policy_early() {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
+
+    let Some(mtm) = MainThreadMarker::new() else {
+        eprintln!("[meterbar] early Accessory policy skipped (not main thread)");
+        return;
+    };
+    let app = NSApplication::sharedApplication(mtm);
+    let ok = app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+    eprintln!("[meterbar] early NSApplicationActivationPolicyAccessory ok={ok}");
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(target_os = "macos")]
+    apply_accessory_activation_policy_early();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_autostart::init(
@@ -829,6 +1062,7 @@ pub fn run() {
         .setup(|app| {
             #[cfg(target_os = "macos")]
             {
+                // 双保险：建窗后仍保持 Accessory。
                 let _ = app
                     .handle()
                     .set_activation_policy(tauri::ActivationPolicy::Accessory);
@@ -905,6 +1139,7 @@ pub fn run() {
             commands::refresh_codex,
             commands::refresh_deepseek,
             commands::refresh_system,
+            commands::refresh_system_fast,
             commands::refresh_latency,
             commands::get_settings,
             commands::update_settings,
@@ -1031,27 +1266,86 @@ mod panel_position_tests {
     }
 
     #[test]
-    fn status_item_screen_beats_mouse_when_menubar_focus_mismatches() {
-        // 全屏：status item / main（菜单栏焦点）在拓展屏，mouseLocation 仍落在主屏
-        // → 必须以菜单栏屏为准（点哪块 tray 锚哪块）。
+    fn click_tray_rect_beats_global_status_item_on_external() {
+        // 副屏点击：tray-icon 按副屏 window scale=1 编码；全局 NSStatusItem 仍报主屏。
+        // 不变量：必须以 click_tray_rect 命中副屏，不能锚主屏。
+        use super::cocoa_tray_hit_on_screen;
+
+        let primary = (0.0, 1728.0, 2.0); // x, w, scale
+        let external = (1728.0, 1920.0, 1.0);
+        // 副屏图标 cocoa x=2000、h=22 → phys (2000, 22) @ scale 1
+        let tray_phys_x = 2000.0;
+        let tray_phys_w = 30.0;
+        let tray_phys_h = 22.0;
+
+        let hit_primary = cocoa_tray_hit_on_screen(
+            primary.0, primary.1, primary.2, tray_phys_x, tray_phys_w, tray_phys_h,
+        );
+        let hit_external = cocoa_tray_hit_on_screen(
+            external.0, external.1, external.2, tray_phys_x, tray_phys_w, tray_phys_h,
+        );
+        assert!(hit_external.is_some(), "副屏 scale 应命中");
+        // 误用主屏 scale=2 时 X 落到主屏，但图标逻辑高度偏离 22 → score 更差或仍可能命中；
+        // 择优取 score 更小者必须是副屏。
+        let chosen = match (hit_primary, hit_external) {
+            (Some((_, sp)), Some((ax, se))) if se <= sp => ("external", ax),
+            (None, Some((ax, _))) => ("external", ax),
+            (Some((ax, _)), None) => ("primary", ax),
+            (Some((ax, sp)), Some((_, se))) if sp < se => ("primary", ax),
+            _ => panic!("no hit"),
+        };
+        assert_eq!(chosen.0, "external");
+        assert!((chosen.1 - 2015.0).abs() < 0.1); // 2000 + 30/2
+    }
+
+    #[test]
+    fn click_tray_rect_on_retina_primary_not_external() {
+        use super::cocoa_tray_hit_on_screen;
+
+        let primary = (0.0, 1512.0, 2.0);
+        let external = (1512.0, 1920.0, 1.0);
+        // 主屏逻辑 x=1400 h=22 → phys 2800 / 44 @ scale 2
+        let tray_phys_x = 1400.0 * 2.0;
+        let tray_phys_w = 30.0 * 2.0;
+        let tray_phys_h = 22.0 * 2.0;
+
+        let hit_primary = cocoa_tray_hit_on_screen(
+            primary.0, primary.1, primary.2, tray_phys_x, tray_phys_w, tray_phys_h,
+        );
+        let hit_external = cocoa_tray_hit_on_screen(
+            external.0, external.1, external.2, tray_phys_x, tray_phys_w, tray_phys_h,
+        );
+        assert!(hit_primary.is_some());
+        // 物理 X=2800 若按 scale=1 会落在拓展屏，但高度 44 的 score 差于主屏的 0
+        let (name, _) = match (hit_primary, hit_external) {
+            (Some((ax, sp)), Some((_, se))) if sp <= se => ("primary", ax),
+            (Some((ax, _)), None) => ("primary", ax),
+            (None, Some((ax, _))) => ("external", ax),
+            (Some((_, sp)), Some((ax, se))) if se < sp => ("external", ax),
+            _ => panic!("no hit"),
+        };
+        assert_eq!(name, "primary");
+    }
+
+    #[test]
+    fn without_click_menubar_focus_beats_mouse_on_content_screen() {
+        // 无 tray_rect 时：全屏 mouse 在主屏、main 在副屏 → 跟菜单栏焦点屏。
         let primary: (f64, f64, f64, f64) = (0.0, 0.0, 1728.0, 1117.0);
         let external: (f64, f64, f64, f64) = (-896.0, -516.0, 896.0, 1344.0);
         let mouse: (f64, f64) = (1187.5, 1099.1);
-        let main = external; // NSScreen.main = 有菜单栏焦点的全屏屏
-        let status_item = external;
+        let main = external;
         let mouse_on_primary = cocoa_point_in_rect(
             mouse.0, mouse.1, primary.0, primary.1, primary.2, primary.3,
         );
-        let main_is_external = (main.0 - external.0).abs() < 0.5;
-        let status_is_external = (status_item.0 - external.0).abs() < 0.5;
-        assert!(mouse_on_primary && main_is_external && status_is_external);
-        let menubar_focus_mismatch = mouse_on_primary && main_is_external;
-        let chosen = if status_is_external {
-            external
-        } else if menubar_focus_mismatch {
+        let menubar_focus_mismatch = mouse_on_primary;
+        let status_item_is_primary = true; // 全局 NSStatusItem 常锚错到主屏
+        // 新决策：无 click 时 menubar mismatch → main，不再让错误的 status_item 抢先。
+        let chosen = if menubar_focus_mismatch {
             main
-        } else {
+        } else if status_item_is_primary {
             primary
+        } else {
+            external
         };
         assert_eq!(chosen.0, external.0);
         assert!(cocoa_frame_center_on_screen(

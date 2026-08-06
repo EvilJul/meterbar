@@ -96,6 +96,7 @@ fn build_panel_state(state: &AppState) -> Result<PanelState, String> {
         system,
         latency,
         auto_refresh_sec: settings.cursor_refresh_sec,
+        cpu_gpu_refresh_sec: settings.cpu_gpu_refresh_sec,
         system_refresh_sec: settings.system_refresh_sec,
         high_latency_ms: settings.high_latency_ms,
         has_cursor_token: has_cursor_token(),
@@ -189,13 +190,59 @@ pub async fn refresh_codex(state: State<'_, AppState>) -> Result<UsageSnapshot, 
     Ok(snap)
 }
 
-/// 独立采集本机系统指标；与 Cursor 失败解耦。
+/// 快拍：仅刷新 CPU/GPU，保留缓存中的内存/磁盘/VPN。
+#[tauri::command]
+pub fn refresh_system_fast(state: State<'_, AppState>) -> SystemSnapshot {
+    let fast = system::sample_fast();
+    let snap = if let Ok(mut guard) = state.last_system.lock() {
+        let merged = match guard.as_ref() {
+            Some(prev) => SystemSnapshot {
+                cpu_percent: fast.cpu_percent,
+                cpu_temp_c: fast.cpu_temp_c,
+                gpu_percent: fast.gpu_percent,
+                gpu_temp_c: fast.gpu_temp_c,
+                mem_used_bytes: prev.mem_used_bytes,
+                mem_total_bytes: prev.mem_total_bytes,
+                disk_used_bytes: prev.disk_used_bytes,
+                disk_available_bytes: prev.disk_available_bytes,
+                vpn_ip: prev.vpn_ip.clone(),
+                fetched_at: fast.fetched_at,
+            },
+            None => fast,
+        };
+        *guard = Some(merged.clone());
+        merged
+    } else {
+        fast
+    };
+    snap
+}
+
+/// 慢拍：刷新内存/磁盘/VPN，保留缓存中的 CPU/GPU。
 #[tauri::command]
 pub fn refresh_system(state: State<'_, AppState>) -> SystemSnapshot {
-    let snap = system::sample();
-    if let Ok(mut guard) = state.last_system.lock() {
-        *guard = Some(snap.clone());
-    }
+    let slow = system::sample_slow();
+    let snap = if let Ok(mut guard) = state.last_system.lock() {
+        let merged = match guard.as_ref() {
+            Some(prev) => SystemSnapshot {
+                cpu_percent: prev.cpu_percent,
+                cpu_temp_c: prev.cpu_temp_c,
+                gpu_percent: prev.gpu_percent,
+                gpu_temp_c: prev.gpu_temp_c,
+                mem_used_bytes: slow.mem_used_bytes,
+                mem_total_bytes: slow.mem_total_bytes,
+                disk_used_bytes: slow.disk_used_bytes,
+                disk_available_bytes: slow.disk_available_bytes,
+                vpn_ip: slow.vpn_ip.clone(),
+                fetched_at: slow.fetched_at,
+            },
+            None => slow,
+        };
+        *guard = Some(merged.clone());
+        merged
+    } else {
+        slow
+    };
     snap
 }
 

@@ -10,21 +10,86 @@ use sysinfo::{
 
 use crate::models::SystemSnapshot;
 
-/// 采集一次系统指标。GPU / 磁盘 / VPN 尽力而为，不可用时为 `None`。
+/// 采集一次完整系统指标（CPU/GPU + 内存/磁盘/VPN）。
 pub fn sample() -> SystemSnapshot {
+    let (cpu_percent, cpu_temp_c, gpu_percent, gpu_temp_c) = sample_cpu_gpu_fields();
+    let (mem_used_bytes, mem_total_bytes, disk_used_bytes, disk_available_bytes, vpn_ip) =
+        sample_slow_fields();
+
+    SystemSnapshot {
+        cpu_percent,
+        cpu_temp_c,
+        gpu_percent,
+        gpu_temp_c,
+        mem_used_bytes,
+        mem_total_bytes,
+        disk_used_bytes,
+        disk_available_bytes,
+        vpn_ip,
+        fetched_at: Utc::now().to_rfc3339(),
+    }
+}
+
+/// 快拍：仅 CPU + GPU（避免磁盘/ioreg 全量以外的慢路径；GPU 仍走 ioreg）。
+pub fn sample_fast() -> SystemSnapshot {
+    let (cpu_percent, cpu_temp_c, gpu_percent, gpu_temp_c) = sample_cpu_gpu_fields();
+    SystemSnapshot {
+        cpu_percent,
+        cpu_temp_c,
+        gpu_percent,
+        gpu_temp_c,
+        mem_used_bytes: 0,
+        mem_total_bytes: 0,
+        disk_used_bytes: None,
+        disk_available_bytes: None,
+        vpn_ip: None,
+        fetched_at: Utc::now().to_rfc3339(),
+    }
+}
+
+/// 慢拍：内存 / 磁盘 / VPN（不含 CPU 双采样与 GPU ioreg）。
+pub fn sample_slow() -> SystemSnapshot {
+    let (mem_used_bytes, mem_total_bytes, disk_used_bytes, disk_available_bytes, vpn_ip) =
+        sample_slow_fields();
+    SystemSnapshot {
+        cpu_percent: 0.0,
+        cpu_temp_c: None,
+        gpu_percent: None,
+        gpu_temp_c: None,
+        mem_used_bytes,
+        mem_total_bytes,
+        disk_used_bytes,
+        disk_available_bytes,
+        vpn_ip,
+        fetched_at: Utc::now().to_rfc3339(),
+    }
+}
+
+fn sample_cpu_gpu_fields() -> (f64, Option<f64>, Option<f64>, Option<f64>) {
     let mut sys = System::new_with_specifics(
-        RefreshKind::nothing()
-            .with_cpu(CpuRefreshKind::everything())
-            .with_memory(MemoryRefreshKind::everything()),
+        RefreshKind::nothing().with_cpu(CpuRefreshKind::everything()),
     );
 
     // sysinfo 需要两次 refresh 才能得到有意义的 CPU 利用率。
     sys.refresh_cpu_usage();
     std::thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
     sys.refresh_cpu_usage();
-    sys.refresh_memory();
 
     let (gpu_percent, gpu_temp_c) = try_gpu_metrics();
+    (
+        f64::from(sys.global_cpu_usage()),
+        None,
+        gpu_percent,
+        gpu_temp_c,
+    )
+}
+
+fn sample_slow_fields() -> (u64, u64, Option<u64>, Option<u64>, Option<String>) {
+    let mut sys = System::new_with_specifics(
+        RefreshKind::nothing().with_memory(MemoryRefreshKind::everything()),
+    );
+    sys.refresh_memory();
+
     let (disk_used_bytes, disk_available_bytes) = sample_root_disk();
     let vpn_ip = detect_vpn_ip();
 
@@ -33,18 +98,13 @@ pub fn sample() -> SystemSnapshot {
     let (mem_used, mem_total) =
         normalize_memory_bytes(sys.total_memory(), sys.available_memory());
 
-    SystemSnapshot {
-        cpu_percent: f64::from(sys.global_cpu_usage()),
-        cpu_temp_c: None,
-        gpu_percent,
-        gpu_temp_c,
-        mem_used_bytes: mem_used,
-        mem_total_bytes: mem_total,
+    (
+        mem_used,
+        mem_total,
         disk_used_bytes,
         disk_available_bytes,
         vpn_ip,
-        fetched_at: Utc::now().to_rfc3339(),
-    }
+    )
 }
 
 /// 将 sysinfo 的 total/available 规范为互补的（已用, 总量）。

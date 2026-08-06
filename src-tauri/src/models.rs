@@ -117,7 +117,9 @@ pub struct PanelState {
     pub latency: LatencySnapshot,
     /// Cursor 用量自动刷新间隔（秒），默认建议 300。
     pub auto_refresh_sec: u64,
-    /// 系统与延迟自动刷新间隔（秒）。
+    /// CPU/GPU 自动刷新间隔（秒）。
+    pub cpu_gpu_refresh_sec: u64,
+    /// 其余系统指标与延迟自动刷新间隔（秒）：内存/磁盘/VPN/Latency。
     pub system_refresh_sec: u64,
     /// 高延迟阈值（毫秒）；UI 标红。
     pub high_latency_ms: u64,
@@ -167,7 +169,9 @@ impl Default for ProviderVisibility {
 pub struct AppSettings {
     /// Cursor 用量自动刷新间隔（秒），默认 300，最小 60。
     pub cursor_refresh_sec: u64,
-    /// 系统指标刷新间隔（秒），默认 15，范围 10–30。
+    /// CPU/GPU 刷新间隔（秒），默认 2，范围 1–10。
+    pub cpu_gpu_refresh_sec: u64,
+    /// 其余系统指标刷新间隔（秒）：内存/磁盘/VPN/Latency；默认 10，范围 5–60。
     pub system_refresh_sec: u64,
     /// 延迟探测目标 URL，默认 `https://cursor.com`。
     pub latency_target: String,
@@ -187,6 +191,7 @@ impl Default for AppSettings {
     fn default() -> Self {
         Self {
             cursor_refresh_sec: Self::DEFAULT_CURSOR_REFRESH_SEC,
+            cpu_gpu_refresh_sec: Self::DEFAULT_CPU_GPU_REFRESH_SEC,
             system_refresh_sec: Self::DEFAULT_SYSTEM_REFRESH_SEC,
             latency_target: Self::DEFAULT_LATENCY_TARGET.to_string(),
             high_latency_ms: Self::DEFAULT_HIGH_LATENCY_MS,
@@ -202,9 +207,13 @@ impl AppSettings {
     pub const MIN_CURSOR_REFRESH_SEC: u64 = 60;
     pub const DEFAULT_CURSOR_REFRESH_SEC: u64 = 300;
 
-    pub const MIN_SYSTEM_REFRESH_SEC: u64 = 10;
-    pub const MAX_SYSTEM_REFRESH_SEC: u64 = 30;
-    pub const DEFAULT_SYSTEM_REFRESH_SEC: u64 = 15;
+    pub const MIN_CPU_GPU_REFRESH_SEC: u64 = 1;
+    pub const MAX_CPU_GPU_REFRESH_SEC: u64 = 10;
+    pub const DEFAULT_CPU_GPU_REFRESH_SEC: u64 = 2;
+
+    pub const MIN_SYSTEM_REFRESH_SEC: u64 = 5;
+    pub const MAX_SYSTEM_REFRESH_SEC: u64 = 60;
+    pub const DEFAULT_SYSTEM_REFRESH_SEC: u64 = 10;
 
     pub const DEFAULT_LATENCY_TARGET: &'static str = "https://cursor.com";
     pub const DEFAULT_HIGH_LATENCY_MS: u64 = 500;
@@ -221,6 +230,13 @@ impl AppSettings {
 
     pub fn clamp_cursor_refresh_sec(sec: u64) -> u64 {
         sec.max(Self::MIN_CURSOR_REFRESH_SEC)
+    }
+
+    pub fn clamp_cpu_gpu_refresh_sec(sec: u64) -> u64 {
+        sec.clamp(
+            Self::MIN_CPU_GPU_REFRESH_SEC,
+            Self::MAX_CPU_GPU_REFRESH_SEC,
+        )
     }
 
     pub fn clamp_system_refresh_sec(sec: u64) -> u64 {
@@ -292,6 +308,7 @@ impl AppSettings {
 #[serde(rename_all = "camelCase")]
 pub struct AppSettingsUpdate {
     pub cursor_refresh_sec: Option<u64>,
+    pub cpu_gpu_refresh_sec: Option<u64>,
     pub system_refresh_sec: Option<u64>,
     pub latency_target: Option<String>,
     pub high_latency_ms: Option<u64>,

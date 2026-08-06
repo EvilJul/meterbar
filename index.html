@@ -499,8 +499,12 @@
               <input id="cursor-refresh-input" type="number" min="60" step="1" />
             </label>
             <label class="field">
-              <span class="field-label">系统/延迟刷新间隔（秒，10–30）</span>
-              <input id="system-refresh-input" type="number" min="10" max="30" step="1" />
+              <span class="field-label">CPU/GPU 刷新间隔（秒，1–10）</span>
+              <input id="cpu-gpu-refresh-input" type="number" min="1" max="10" step="1" />
+            </label>
+            <label class="field">
+              <span class="field-label">其余系统/延迟刷新间隔（秒，5–60）</span>
+              <input id="system-refresh-input" type="number" min="5" max="60" step="1" />
             </label>
             <label class="field">
               <span class="field-label">高延迟阈值（毫秒）</span>

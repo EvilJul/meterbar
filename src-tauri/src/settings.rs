@@ -74,6 +74,8 @@ struct SettingsFile {
     #[serde(default)]
     cursor_refresh_sec: Option<u64>,
     #[serde(default)]
+    cpu_gpu_refresh_sec: Option<u64>,
+    #[serde(default)]
     system_refresh_sec: Option<u64>,
     #[serde(default)]
     latency_target: Option<String>,
@@ -98,6 +100,7 @@ impl SettingsFile {
         Self {
             version: SCHEMA_VERSION,
             cursor_refresh_sec: Some(settings.cursor_refresh_sec),
+            cpu_gpu_refresh_sec: Some(settings.cpu_gpu_refresh_sec),
             system_refresh_sec: Some(settings.system_refresh_sec),
             latency_target: Some(settings.latency_target.clone()),
             high_latency_ms: Some(settings.high_latency_ms),
@@ -118,15 +121,35 @@ impl SettingsFile {
         let show_latency_section = self
             .show_latency_section
             .unwrap_or_else(|| legacy_system.unwrap_or(defaults.show_latency_section));
+
+        // 旧文件仅有 systemRefreshSec（单一全量间隔）：迁到 CPU/GPU，其余用新默认。
+        let legacy_single_interval =
+            self.cpu_gpu_refresh_sec.is_none() && self.system_refresh_sec.is_some();
+        let cpu_gpu_refresh_sec = AppSettings::clamp_cpu_gpu_refresh_sec(
+            self.cpu_gpu_refresh_sec.unwrap_or_else(|| {
+                if legacy_single_interval {
+                    self.system_refresh_sec.unwrap_or(defaults.cpu_gpu_refresh_sec)
+                } else {
+                    defaults.cpu_gpu_refresh_sec
+                }
+            }),
+        );
+        let system_refresh_sec = if legacy_single_interval {
+            defaults.system_refresh_sec
+        } else {
+            AppSettings::clamp_system_refresh_sec(
+                self.system_refresh_sec
+                    .unwrap_or(defaults.system_refresh_sec),
+            )
+        };
+
         AppSettings {
             cursor_refresh_sec: AppSettings::clamp_cursor_refresh_sec(
                 self.cursor_refresh_sec
                     .unwrap_or(defaults.cursor_refresh_sec),
             ),
-            system_refresh_sec: AppSettings::clamp_system_refresh_sec(
-                self.system_refresh_sec
-                    .unwrap_or(defaults.system_refresh_sec),
-            ),
+            cpu_gpu_refresh_sec,
+            system_refresh_sec,
             latency_target: AppSettings::normalize_latency_target(
                 self.latency_target
                     .as_deref()
@@ -244,6 +267,9 @@ pub fn apply_update(
     if let Some(sec) = patch.cursor_refresh_sec {
         current.cursor_refresh_sec = AppSettings::clamp_cursor_refresh_sec(sec);
     }
+    if let Some(sec) = patch.cpu_gpu_refresh_sec {
+        current.cpu_gpu_refresh_sec = AppSettings::clamp_cpu_gpu_refresh_sec(sec);
+    }
     if let Some(sec) = patch.system_refresh_sec {
         current.system_refresh_sec = AppSettings::clamp_system_refresh_sec(sec);
     }
@@ -313,6 +339,10 @@ mod tests {
             assert!(!path.exists());
             let loaded = load();
             assert_eq!(loaded.cursor_refresh_sec, AppSettings::DEFAULT_CURSOR_REFRESH_SEC);
+            assert_eq!(
+                loaded.cpu_gpu_refresh_sec,
+                AppSettings::DEFAULT_CPU_GPU_REFRESH_SEC
+            );
             assert_eq!(loaded.system_refresh_sec, AppSettings::DEFAULT_SYSTEM_REFRESH_SEC);
             assert_eq!(loaded.latency_target, AppSettings::DEFAULT_LATENCY_TARGET);
             assert_eq!(loaded.high_latency_ms, AppSettings::DEFAULT_HIGH_LATENCY_MS);
@@ -341,6 +371,7 @@ mod tests {
                 r#"{
                   "version": 1,
                   "cursorRefreshSec": 10,
+                  "cpuGpuRefreshSec": 999,
                   "systemRefreshSec": 999,
                   "latencyTarget": "  ",
                   "highLatencyMs": 0
@@ -349,7 +380,8 @@ mod tests {
             .expect("write");
             let loaded = load();
             assert_eq!(loaded.cursor_refresh_sec, 60);
-            assert_eq!(loaded.system_refresh_sec, 30);
+            assert_eq!(loaded.cpu_gpu_refresh_sec, 10);
+            assert_eq!(loaded.system_refresh_sec, 60);
             assert_eq!(loaded.latency_target, AppSettings::DEFAULT_LATENCY_TARGET);
             assert_eq!(loaded.high_latency_ms, 1);
             // 旧四字段文件：新字段用默认
@@ -357,6 +389,26 @@ mod tests {
             assert_eq!(loaded.provider_order, AppSettings::default_provider_order());
             assert!(loaded.show_system_section);
             assert!(loaded.show_latency_section);
+        });
+    }
+
+    #[test]
+    fn load_migrates_legacy_single_system_interval_to_cpu_gpu() {
+        with_temp_settings_path(|path| {
+            fs::write(
+                path,
+                r#"{
+                  "version": 1,
+                  "systemRefreshSec": 3
+                }"#,
+            )
+            .expect("write");
+            let loaded = load();
+            assert_eq!(loaded.cpu_gpu_refresh_sec, 3);
+            assert_eq!(
+                loaded.system_refresh_sec,
+                AppSettings::DEFAULT_SYSTEM_REFRESH_SEC
+            );
         });
     }
 
@@ -449,7 +501,8 @@ mod tests {
         with_temp_settings_path(|path| {
             let original = AppSettings {
                 cursor_refresh_sec: 120,
-                system_refresh_sec: 20,
+                cpu_gpu_refresh_sec: 3,
+                system_refresh_sec: 15,
                 latency_target: "https://example.com".to_string(),
                 high_latency_ms: 800,
                 provider_visibility: ProviderVisibility {
@@ -469,7 +522,8 @@ mod tests {
             assert!(path.exists());
             let loaded = load();
             assert_eq!(loaded.cursor_refresh_sec, 120);
-            assert_eq!(loaded.system_refresh_sec, 20);
+            assert_eq!(loaded.cpu_gpu_refresh_sec, 3);
+            assert_eq!(loaded.system_refresh_sec, 15);
             assert_eq!(loaded.latency_target, "https://example.com");
             assert_eq!(loaded.high_latency_ms, 800);
             assert_eq!(loaded.provider_visibility, original.provider_visibility);
@@ -479,6 +533,8 @@ mod tests {
 
             let raw = fs::read_to_string(path).expect("read raw");
             assert!(raw.contains("cursorRefreshSec"));
+            assert!(raw.contains("cpuGpuRefreshSec"));
+            assert!(raw.contains("systemRefreshSec"));
             assert!(raw.contains("providerVisibility"));
             assert!(raw.contains("providerOrder"));
             assert!(raw.contains("showSystemSection"));
@@ -516,7 +572,8 @@ mod tests {
             &mut current,
             AppSettingsUpdate {
                 cursor_refresh_sec: Some(180),
-                system_refresh_sec: Some(25),
+                cpu_gpu_refresh_sec: Some(4),
+                system_refresh_sec: Some(20),
                 latency_target: Some("https://rolled-back.example".into()),
                 high_latency_ms: Some(900),
                 ..Default::default()

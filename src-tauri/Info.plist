@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Agent/accessory：无 Dock 图标，允许窗口浮在其他 App 的全屏 Space 上 -->
+	<key>LSUIElement</key>
+	<true/>
+</dict>
+</plist>
