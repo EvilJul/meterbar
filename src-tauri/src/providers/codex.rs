@@ -89,7 +89,95 @@ fn unavailable(message: &str) -> UsageSnapshot {
     )
 }
 
-/// 解析 `codex` 可执行文件：`USAGES_CODEX_BIN` > PATH > 常见安装位置。
+fn resolve_home_dir() -> Option<PathBuf> {
+    std::env::home_dir().or_else(|| std::env::var_os("HOME").map(PathBuf::from))
+}
+
+/// macOS GUI / `.app` 启动时 PATH 通常不含 shell/nvm；补充常见 node 发行版 bin。
+fn extra_node_bin_dirs(home: &std::path::Path) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    dirs.push(PathBuf::from("/opt/homebrew/bin"));
+    dirs.push(PathBuf::from("/usr/local/bin"));
+    dirs.push(home.join(".local/bin"));
+    dirs.push(home.join(".cargo/bin"));
+    dirs.push(home.join("bin"));
+    dirs.push(home.join(".volta/bin"));
+
+    // nvm：优先 default alias，再扫已安装版本（新→旧）
+    let nvm_root = home.join(".nvm/versions/node");
+    if let Ok(alias) = std::fs::read_to_string(home.join(".nvm/alias/default")) {
+        let ver = alias.trim();
+        if !ver.is_empty() {
+            let with_v = if ver.starts_with('v') {
+                ver.to_string()
+            } else {
+                format!("v{ver}")
+            };
+            dirs.push(nvm_root.join(&with_v).join("bin"));
+            if !ver.starts_with('v') {
+                dirs.push(nvm_root.join(ver).join("bin"));
+            }
+        }
+    }
+    if let Ok(entries) = std::fs::read_dir(&nvm_root) {
+        let mut versions: Vec<PathBuf> = entries
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.is_dir())
+            .collect();
+        versions.sort();
+        versions.reverse();
+        for ver_dir in versions {
+            dirs.push(ver_dir.join("bin"));
+        }
+    }
+
+    // fnm 常见布局
+    for fnm_root in [
+        home.join(".fnm/node-versions"),
+        home.join(".local/share/fnm/node-versions"),
+    ] {
+        if let Ok(entries) = std::fs::read_dir(&fnm_root) {
+            let mut versions: Vec<PathBuf> = entries
+                .filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|p| p.is_dir())
+                .collect();
+            versions.sort();
+            versions.reverse();
+            for ver_dir in versions {
+                dirs.push(ver_dir.join("installation/bin"));
+            }
+        }
+    }
+
+    dirs
+}
+
+/// 为子进程拼 PATH：codex 所在目录优先（同目录通常有 node，供 `#!/usr/bin/env node`）。
+fn augmented_path_for_codex(codex_bin: &std::path::Path) -> std::ffi::OsString {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if let Some(parent) = codex_bin.parent() {
+        dirs.push(parent.to_path_buf());
+    }
+    if let Some(home) = resolve_home_dir() {
+        for d in extra_node_bin_dirs(&home) {
+            if !dirs.iter().any(|x| x == &d) {
+                dirs.push(d);
+            }
+        }
+    }
+    if let Some(existing) = std::env::var_os("PATH") {
+        for d in std::env::split_paths(&existing) {
+            if !dirs.iter().any(|x| x == &d) {
+                dirs.push(d);
+            }
+        }
+    }
+    std::env::join_paths(&dirs).unwrap_or_else(|_| {
+        std::env::var_os("PATH").unwrap_or_else(|| std::ffi::OsString::from("/usr/bin:/bin"))
+    })
+}
+
+/// 解析 `codex` 可执行文件：`USAGES_CODEX_BIN` > PATH > 常见/nvm/fnm 安装位置。
 fn resolve_codex_bin() -> Option<PathBuf> {
     if let Ok(raw) = std::env::var("USAGES_CODEX_BIN") {
         let trimmed = raw.trim();
@@ -105,15 +193,14 @@ fn resolve_codex_bin() -> Option<PathBuf> {
         return Some(from_path);
     }
 
-    let home = std::env::var_os("HOME").map(PathBuf::from);
     let mut candidates = vec![
         PathBuf::from("/opt/homebrew/bin/codex"),
         PathBuf::from("/usr/local/bin/codex"),
     ];
-    if let Some(home) = home {
-        candidates.push(home.join(".local/bin/codex"));
-        candidates.push(home.join(".cargo/bin/codex"));
-        candidates.push(home.join("bin/codex"));
+    if let Some(home) = resolve_home_dir() {
+        for dir in extra_node_bin_dirs(&home) {
+            candidates.push(dir.join("codex"));
+        }
     }
 
     candidates.into_iter().find(|p| p.is_file())
@@ -344,8 +431,11 @@ fn fetch_with_timeout(codex_bin: PathBuf) -> UsageSnapshot {
     let (tx, rx) = mpsc::channel();
     let (pid_tx, pid_rx) = mpsc::channel::<u32>();
     thread::spawn(move || {
+        // GUI/.app 精简 PATH 下 npm 包装脚本的 `#!/usr/bin/env node` 会失败；补齐 bin。
+        let child_path = augmented_path_for_codex(&codex_bin);
         let mut child = match Command::new(&codex_bin)
             .args(["app-server", "--stdio"])
+            .env("PATH", &child_path)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -498,5 +588,41 @@ mod tests {
         assert_eq!(snap.status, ProviderStatus::NetworkError);
         assert!(snap.percent_used.is_none());
         assert_eq!(snap.used, 0.0);
+    }
+
+    #[test]
+    fn augmented_path_puts_codex_dir_first() {
+        let codex = PathBuf::from("/tmp/fake-nvm/bin/codex");
+        let path = augmented_path_for_codex(&codex);
+        let dirs: Vec<PathBuf> = std::env::split_paths(&path).collect();
+        assert_eq!(dirs.first().map(|p| p.as_path()), Some(std::path::Path::new("/tmp/fake-nvm/bin")));
+    }
+
+    #[test]
+    fn extra_bin_dirs_prefer_nvm_default_alias() {
+        let root = std::env::temp_dir().join(format!(
+            "meterbar-codex-nvm-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let nvm_node = root.join(".nvm/versions/node");
+        std::fs::create_dir_all(nvm_node.join("v22.12.0/bin")).expect("mkdir");
+        std::fs::create_dir_all(nvm_node.join("v20.0.0/bin")).expect("mkdir");
+        std::fs::create_dir_all(root.join(".nvm/alias")).expect("mkdir alias");
+        std::fs::write(root.join(".nvm/alias/default"), "22.12.0\n").expect("alias");
+
+        let dirs = extra_node_bin_dirs(&root);
+        let default_bin = nvm_node.join("v22.12.0/bin");
+        let pos_default = dirs.iter().position(|d| d == &default_bin);
+        let pos_old = dirs
+            .iter()
+            .position(|d| d == &nvm_node.join("v20.0.0/bin"));
+        assert!(pos_default.is_some(), "应包含 nvm default bin");
+        assert!(pos_old.is_some(), "应扫到其他 nvm 版本");
+        assert!(
+            pos_default.unwrap() < pos_old.unwrap(),
+            "default alias 应排在版本扫描之前"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
