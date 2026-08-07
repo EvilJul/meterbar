@@ -1274,12 +1274,11 @@ fn show_panel(app: &tauri::AppHandle, tray_rect: Option<Rect>) {
         #[cfg(target_os = "linux")]
         {
             use gtk::prelude::GtkWindowExt;
-            // 先铺透明 shield，再把面板抬到最前，避免 shield 盖住面板。
-            linux_show_dismiss_shield(app);
             if let Ok(gtk_win) = window.gtk_window() {
                 gtk_win.present();
                 gtk_win.set_keep_above(true);
             }
+            linux_grab_pointer_for_dismiss(app);
         }
 
         let app2 = app.clone();
@@ -1301,11 +1300,11 @@ fn show_panel(app: &tauri::AppHandle, tray_rect: Option<Rect>) {
                         #[cfg(target_os = "linux")]
                         {
                             use gtk::prelude::GtkWindowExt;
-                            linux_show_dismiss_shield(&app3);
                             if let Ok(gtk_win) = w.gtk_window() {
                                 gtk_win.present();
                                 gtk_win.set_keep_above(true);
                             }
+                            linux_grab_pointer_for_dismiss(&app3);
                         }
                         eprintln!(
                             "[meterbar] linux reanchor +80ms visible={:?} outer={:?}",
@@ -1355,7 +1354,7 @@ fn hide_panel_if_blurred(window: &WebviewWindow) {
     eprintln!("[meterbar] hide_panel on blur");
     let _ = window.hide();
     #[cfg(target_os = "linux")]
-    linux_hide_dismiss_shield();
+    linux_ungrab_dismiss_pointer();
 }
 
 fn toggle_panel(app: &tauri::AppHandle, tray_rect: Option<Rect>) {
@@ -1374,7 +1373,7 @@ fn toggle_panel(app: &tauri::AppHandle, tray_rect: Option<Rect>) {
     if effectively_shown {
         let _ = window.hide();
         #[cfg(target_os = "linux")]
-        linux_hide_dismiss_shield();
+        linux_ungrab_dismiss_pointer();
     } else {
         show_panel(app, tray_rect);
     }
@@ -1396,92 +1395,88 @@ fn apply_accessory_activation_policy_early() {
     eprintln!("[meterbar] early NSApplicationActivationPolicyAccessory ok={ok}");
 }
 
-/// Linux：无边框 always-on-top 面板常拿不到焦点，点桌面不会触发 Focused(false)。
-/// 用全屏 Popup 接外部点击，但必须以 RGBA + draw(alpha=0) 真正透明；
-/// 禁止用 `set_opacity(0.02)`——合成器上会变成可见全屏灰罩。
+/// 外部点击关闭用指针 grab 实现，不再用全屏透明窗口做 dismiss shield：
+/// X11 上无论 Popup(override-redirect) 还是 Toplevel，实测（GNOME mutter/XWayland）
+/// 都可能盖在面板之上，且 input shape 挖孔不被尊重，导致面板自身点击被 shield 吃掉。
+/// 方案：grab 窗口=面板窗口 + owner_events=true —— 面板内点击正常路由，
+/// 面板外点击被 X 服务器重定向到面板窗口，按坐标越界识别为外部点击后关闭。
+static PANEL_POINTER_GRABBED: AtomicBool = AtomicBool::new(false);
+/// grab 信号只连接一次，避免每次 show_panel 叠加 handler。
+static PANEL_CLICK_HOOK_ATTACHED: AtomicBool = AtomicBool::new(false);
+
 #[cfg(target_os = "linux")]
-mod linux_dismiss {
-    use std::cell::RefCell;
-    thread_local! {
-        pub static SHIELD: RefCell<Option<gtk::Window>> = const { RefCell::new(None) };
+fn linux_ungrab_dismiss_pointer() {
+    use gtk::gdk;
+    use gtk::gdk::prelude::{DisplayExtManual, SeatExt};
+    if !PANEL_POINTER_GRABBED.swap(false, Ordering::SeqCst) {
+        return;
     }
-}
-
-#[cfg(target_os = "linux")]
-fn linux_hide_dismiss_shield() {
-    use gtk::prelude::WidgetExt;
-    linux_dismiss::SHIELD.with(|cell| {
-        if let Some(shield) = cell.borrow().as_ref() {
-            shield.hide();
+    if let Some(display) = gdk::Display::default() {
+        if let Some(seat) = display.default_seat() {
+            seat.ungrab();
         }
-    });
+    }
+    eprintln!("[meterbar] linux pointer ungrabbed");
 }
 
 #[cfg(target_os = "linux")]
-fn linux_show_dismiss_shield(app: &tauri::AppHandle) {
-    use cairo::{Operator, RectangleInt, Region};
-    use gtk::gdk::{self, prelude::MonitorExt};
+fn linux_grab_pointer_for_dismiss(app: &tauri::AppHandle) {
+    use gtk::gdk;
+    use gtk::gdk::prelude::{DisplayExtManual, SeatExt};
     use gtk::glib;
     use gtk::prelude::*;
-
-    linux_dismiss::SHIELD.with(|cell| {
-        if cell.borrow().is_none() {
-            let shield = gtk::Window::new(gtk::WindowType::Popup);
-            shield.set_decorated(false);
-            shield.set_accept_focus(false);
-            shield.set_can_focus(false);
-            shield.set_keep_above(true);
-            shield.set_app_paintable(true);
-            shield.add_events(gdk::EventMask::BUTTON_PRESS_MASK);
-            if let Some(screen) = WidgetExt::screen(&shield) {
-                if let Some(visual) = screen.rgba_visual() {
-                    shield.set_visual(Some(&visual));
-                }
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    let Ok(gtk_win) = window.gtk_window() else {
+        return;
+    };
+    let Some(display) = gdk::Display::default() else {
+        return;
+    };
+    // 只连接一次：面板窗口的 button-press，坐标越界即外部点击 → 关闭。
+    if !PANEL_CLICK_HOOK_ATTACHED.swap(true, Ordering::SeqCst) {
+        let app_c = app.clone();
+        gtk_win.connect_button_press_event(move |w, ev| {
+            let (x, y) = ev.position();
+            // 面板内点击坐标必然在窗口矩形内；grab 重定向的外部点击会带越界坐标。
+            let (ww, wh) = w
+                .window()
+                .map(|gw| (gw.width() as f64, gw.height() as f64))
+                .unwrap_or((0.0, 0.0));
+            let outside = x < 0.0 || y < 0.0 || x >= ww || y >= wh;
+            if !outside || !PANEL_POINTER_GRABBED.load(Ordering::SeqCst) {
+                return glib::Propagation::Proceed;
             }
-            // 像素全透明；勿用 Window::set_opacity（会整窗变灰）。
-            shield.connect_draw(|_w, cr| {
-                cr.set_operator(Operator::Source);
-                cr.set_source_rgba(0.0, 0.0, 0.0, 0.0);
-                let _ = cr.paint();
-                glib::Propagation::Proceed
-            });
-            let app_c = app.clone();
-            shield.connect_button_press_event(move |s, _event| {
-                if !should_hide_on_blur() {
-                    eprintln!("[meterbar] linux shield click ignored (grace/drag)");
-                    return glib::Propagation::Stop;
-                }
-                eprintln!("[meterbar] linux outside-click → hide panel");
-                if let Some(w) = app_c.get_webview_window("main") {
-                    let _ = w.hide();
-                }
-                s.hide();
-                glib::Propagation::Stop
-            });
-            *cell.borrow_mut() = Some(shield);
-        }
-        let borrow = cell.borrow();
-        let Some(shield) = borrow.as_ref() else {
-            return;
-        };
-        if let Some(display) = gdk::Display::default() {
-            if let Some(monitor) = display.primary_monitor() {
-                let geo = monitor.geometry();
-                shield.move_(geo.x(), geo.y());
-                shield.resize(geo.width(), geo.height());
+            if !should_hide_on_blur() {
+                eprintln!("[meterbar] linux outside-click ignored (grace/drag)");
+                return glib::Propagation::Stop;
             }
-        }
-        shield.show_all();
-        // 确保输入区域覆盖全屏（透明窗在部分合成器上默认不收点击）。
-        if let Some(gw) = shield.window() {
-            let (w, h) = (gw.width(), gw.height());
-            if w > 0 && h > 0 {
-                let region = Region::create_rectangle(&RectangleInt::new(0, 0, w, h));
-                gw.input_shape_combine_region(&region, 0, 0);
+            eprintln!("[meterbar] linux outside-click → hide panel");
+            if let Some(w) = app_c.get_webview_window("main") {
+                let _ = w.hide();
             }
-        }
-        eprintln!("[meterbar] linux transparent dismiss shield shown");
-    });
+            linux_ungrab_dismiss_pointer();
+            glib::Propagation::Stop
+        });
+    }
+    // 重新 grab：grab 窗口 = 面板窗口，owner_events=true 放行面板内点击。
+    let Some(gw) = gtk_win.window() else {
+        return;
+    };
+    let Some(seat) = display.default_seat() else {
+        return;
+    };
+    let status = seat.grab(
+        &gw,
+        gdk::SeatCapabilities::POINTER,
+        true, // owner_events：面板内点击正常路由到面板
+        None,
+        None,
+        None,
+    );
+    PANEL_POINTER_GRABBED.store(status == gdk::GrabStatus::Success, Ordering::SeqCst);
+    eprintln!("[meterbar] linux pointer grab status={status:?}");
 }
 
 /// Wayland 禁止普通窗口绝对定位（set_position 成功但 outer 仍为 0,0）。
@@ -1728,10 +1723,17 @@ pub fn run() {
                     );
                 }
                 window.on_window_event(move |event| {
-                    if let WindowEvent::Focused(false) = event {
-                        if let Some(window) = app_handle.get_webview_window("main") {
-                            hide_panel_if_blurred(&window);
+                    match event {
+                        WindowEvent::Focused(false) => {
+                            if let Some(window) = app_handle.get_webview_window("main") {
+                                hide_panel_if_blurred(&window);
+                            }
                         }
+                        // X11/XWayland 下窗口 resize（如点设置后前端 setSize）会触发 Focused(false)，
+                        // 重置 grace 避免「刚进设置页就被失焦隐藏」。
+                        #[cfg(target_os = "linux")]
+                        WindowEvent::Resized(_) => mark_panel_shown(),
+                        _ => {}
                     }
                 });
             }

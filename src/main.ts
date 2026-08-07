@@ -1144,12 +1144,15 @@ async function applyPanelWindowSize(): Promise<void> {
     syncSettingsScrollFade?.();
     return;
   }
+  // X11/XWayland 下 setSize 可能触发短暂失焦；前后都重置 blur grace 防误关。
+  markPanelShown();
   try {
     await getCurrentWindow().setSize(new LogicalSize(PANEL_WIDTH, height));
     lastAppliedPanelHeight = height;
   } catch (err) {
     console.warn("panel setSize failed", err);
   }
+  markPanelShown();
   syncPanelScrollFade?.();
   syncSettingsScrollFade?.();
 }
