@@ -165,6 +165,19 @@ body {
   box-shadow: var(--panel-shadow);
 }
 
+/* Linux / 无 macOS hudWindow：不透明面板底，保证可读 */
+html.no-vibrancy .panel-shell {
+  background: rgba(248, 249, 251, 0.97);
+  backdrop-filter: blur(18px) saturate(1.15);
+  -webkit-backdrop-filter: blur(18px) saturate(1.15);
+}
+
+@media (prefers-color-scheme: dark) {
+  html.no-vibrancy .panel-shell {
+    background: rgba(28, 30, 36, 0.96);
+  }
+}
+
 .panel {
   display: flex;
   flex-direction: column;

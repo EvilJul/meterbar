@@ -1,6 +1,7 @@
 //! 本机凭证存取：Keychain 优先，并双写本地 fallback（0600）。
 //! 绝不把 token 明文写入日志。
 
+pub mod grok_session;
 pub mod local_session;
 
 use std::fs;
@@ -25,14 +26,7 @@ fn deepseek_entry() -> Result<Entry, String> {
 }
 
 fn fallback_dir() -> Result<PathBuf, String> {
-    if let Ok(dir) = std::env::var("USAGES_CREDENTIALS_DIR") {
-        return Ok(PathBuf::from(dir));
-    }
-    let home = local_session::primary_home_dir()
-        .ok_or_else(|| "无法定位用户主目录".to_string())?;
-    Ok(home
-        .join("Library/Application Support")
-        .join(SERVICE))
+    crate::platform_paths::app_data_dir()
 }
 
 fn fallback_path() -> Result<PathBuf, String> {

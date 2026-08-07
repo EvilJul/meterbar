@@ -10,7 +10,7 @@ use crate::models::{
     UsageSnapshot,
 };
 use crate::network;
-use crate::providers::{codex, cursor, deepseek};
+use crate::providers::{codex, cursor, deepseek, grok};
 use crate::settings;
 use crate::system;
 
@@ -39,6 +39,10 @@ fn has_cursor_token() -> bool {
 
 fn has_deepseek_key() -> bool {
     credentials::has_deepseek_key()
+}
+
+fn has_grok_auth() -> bool {
+    credentials::grok_session::has_local_session()
 }
 
 fn placeholder_system() -> SystemSnapshot {
@@ -101,6 +105,7 @@ fn build_panel_state(state: &AppState) -> Result<PanelState, String> {
         high_latency_ms: settings.high_latency_ms,
         has_cursor_token: has_cursor_token(),
         has_deepseek_key: has_deepseek_key(),
+        has_grok_auth: has_grok_auth(),
     })
 }
 
@@ -187,6 +192,21 @@ pub async fn refresh_deepseek(state: State<'_, AppState>) -> Result<UsageSnapsho
 pub async fn refresh_codex(state: State<'_, AppState>) -> Result<UsageSnapshot, String> {
     let snap = codex::refresh().await;
     store_usage(&state, &snap);
+    Ok(snap)
+}
+
+/// 经本机 Grok 登录态拉取 SuperGrok 周池 billing 快照。
+#[tauri::command]
+pub async fn refresh_grok(state: State<'_, AppState>) -> Result<UsageSnapshot, String> {
+    let snap = grok::refresh().await;
+    // 无本机会话时不占卡片缓存（auto 隐藏）；always 可见性由前端处理。
+    if credentials::grok_session::has_local_session()
+        || snap.status != crate::models::ProviderStatus::NeedsAuth
+    {
+        store_usage(&state, &snap);
+    } else if let Ok(mut guard) = state.last_usages.lock() {
+        guard.retain(|u| u.provider != "grok");
+    }
     Ok(snap)
 }
 
@@ -320,6 +340,15 @@ pub async fn refresh_all(state: State<'_, AppState>) -> Result<PanelState, Strin
         store_usage(&state, &deepseek_snap);
     } else if let Ok(mut guard) = state.last_usages.lock() {
         guard.retain(|u| u.provider != "deepseek");
+    }
+
+    let grok_snap = grok::refresh().await;
+    if credentials::grok_session::has_local_session()
+        || grok_snap.status != crate::models::ProviderStatus::NeedsAuth
+    {
+        store_usage(&state, &grok_snap);
+    } else if let Ok(mut guard) = state.last_usages.lock() {
+        guard.retain(|u| u.provider != "grok");
     }
 
     let system_snap = system::sample();

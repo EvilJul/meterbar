@@ -21,8 +21,8 @@ pub struct LocalSessionProbe {
     pub failure: Option<String>,
 }
 
-/// macOS：从 passwd 解析真实主目录，避免 GUI/启动器传入错误 `HOME`。
-#[cfg(target_os = "macos")]
+/// Unix：从 passwd 解析真实主目录，避免 GUI/启动器传入错误 `HOME`。
+#[cfg(unix)]
 fn passwd_home_dir() -> Option<PathBuf> {
     use std::ffi::CStr;
 
@@ -41,7 +41,7 @@ fn passwd_home_dir() -> Option<PathBuf> {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(unix))]
 fn passwd_home_dir() -> Option<PathBuf> {
     None
 }
@@ -76,25 +76,9 @@ pub fn primary_home_dir() -> Option<PathBuf> {
     home_dir_candidates().into_iter().next()
 }
 
-/// macOS 候选 Cursor globalStorage 路径（含 Insiders / backup）。
-#[cfg(target_os = "macos")]
+/// 平台候选 Cursor globalStorage 路径（含 Insiders / backup）。
 fn candidate_state_db_paths(home: &Path) -> Vec<PathBuf> {
-    let app_support = home.join("Library/Application Support");
-    let bases = [
-        app_support.join("Cursor/User/globalStorage"),
-        app_support.join("Cursor - Insiders/User/globalStorage"),
-    ];
-    let mut paths = Vec::new();
-    for base in bases {
-        paths.push(base.join("state.vscdb"));
-        paths.push(base.join("state.vscdb.backup"));
-    }
-    paths
-}
-
-#[cfg(not(target_os = "macos"))]
-fn candidate_state_db_paths(_home: &Path) -> Vec<PathBuf> {
-    Vec::new()
+    crate::platform_paths::candidate_cursor_state_db_paths(home)
 }
 
 fn resolve_state_db_paths() -> Vec<PathBuf> {
@@ -345,7 +329,7 @@ mod tests {
         let _ = read_access_token();
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     #[test]
     fn wrong_home_env_still_resolves_via_passwd() {
         let _guard = ENV_LOCK.lock().expect("env lock");

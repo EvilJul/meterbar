@@ -6,12 +6,10 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::credentials::local_session;
 use crate::models::{
     AppSettings, AppSettingsUpdate, ProviderVisibility, ProviderVisibilityMode,
 };
 
-const SERVICE: &str = "com.usages.app";
 const SETTINGS_FILE: &str = "settings.json";
 const SCHEMA_VERSION: u32 = 1;
 
@@ -25,6 +23,8 @@ struct ProviderVisibilityFile {
     codex: Option<String>,
     #[serde(default)]
     deepseek: Option<String>,
+    #[serde(default)]
+    grok: Option<String>,
 }
 
 impl ProviderVisibilityFile {
@@ -33,6 +33,7 @@ impl ProviderVisibilityFile {
             cursor: Some(mode_to_str(vis.cursor).to_string()),
             codex: Some(mode_to_str(vis.codex).to_string()),
             deepseek: Some(mode_to_str(vis.deepseek).to_string()),
+            grok: Some(mode_to_str(vis.grok).to_string()),
         }
     }
 
@@ -50,6 +51,11 @@ impl ProviderVisibilityFile {
                 .unwrap_or(ProviderVisibilityMode::Auto),
             deepseek: self
                 .deepseek
+                .as_deref()
+                .map(AppSettings::parse_visibility_mode)
+                .unwrap_or(ProviderVisibilityMode::Auto),
+            grok: self
+                .grok
                 .as_deref()
                 .map(AppSettings::parse_visibility_mode)
                 .unwrap_or(ProviderVisibilityMode::Auto),
@@ -173,7 +179,8 @@ impl SettingsFile {
     }
 }
 
-/// 解析设置文件路径：`USAGES_SETTINGS_PATH` > `USAGES_CREDENTIALS_DIR/settings.json` > 默认 Application Support。
+/// 解析设置文件路径：`USAGES_SETTINGS_PATH` > 平台 app 数据目录 / `settings.json`
+/// （`USAGES_CREDENTIALS_DIR` 由 `platform_paths::app_data_dir` 优先处理）。
 pub fn settings_path() -> Result<PathBuf, String> {
     if let Ok(path) = std::env::var("USAGES_SETTINGS_PATH") {
         let trimmed = path.trim();
@@ -181,18 +188,7 @@ pub fn settings_path() -> Result<PathBuf, String> {
             return Ok(PathBuf::from(trimmed));
         }
     }
-    if let Ok(dir) = std::env::var("USAGES_CREDENTIALS_DIR") {
-        let trimmed = dir.trim();
-        if !trimmed.is_empty() {
-            return Ok(PathBuf::from(trimmed).join(SETTINGS_FILE));
-        }
-    }
-    let home = local_session::primary_home_dir()
-        .ok_or_else(|| "无法定位用户主目录".to_string())?;
-    Ok(home
-        .join("Library/Application Support")
-        .join(SERVICE)
-        .join(SETTINGS_FILE))
+    Ok(crate::platform_paths::app_data_dir()?.join(SETTINGS_FILE))
 }
 
 /// 启动加载：缺文件 / 坏 JSON → 默认值；成功则反序列化并 clamp/normalize。
@@ -440,8 +436,13 @@ mod tests {
                 vec![
                     "codex".to_string(),
                     "cursor".to_string(),
-                    "deepseek".to_string()
+                    "deepseek".to_string(),
+                    "grok".to_string(),
                 ]
+            );
+            assert_eq!(
+                loaded.provider_visibility.grok,
+                ProviderVisibilityMode::Auto
             );
             // 旧字段：System / Latency 同值迁移
             assert!(!loaded.show_system_section);
@@ -484,15 +485,23 @@ mod tests {
                 "acme".into(),
                 "deepseek".into()
             ]),
-            vec!["cursor", "deepseek", "codex"]
+            vec!["cursor", "deepseek", "codex", "grok"]
         );
         assert_eq!(
             AppSettings::normalize_provider_order(&["codex".into(), "codex".into(), "cursor".into()]),
-            vec!["codex", "cursor", "deepseek"]
+            vec!["codex", "cursor", "deepseek", "grok"]
         );
         assert_eq!(
             AppSettings::normalize_provider_order(&["deepseek".into()]),
-            vec!["deepseek", "cursor", "codex"]
+            vec!["deepseek", "cursor", "codex", "grok"]
+        );
+        assert_eq!(
+            AppSettings::normalize_provider_order(&[
+                "cursor".into(),
+                "codex".into(),
+                "deepseek".into()
+            ]),
+            vec!["cursor", "codex", "deepseek", "grok"]
         );
     }
 
@@ -509,11 +518,13 @@ mod tests {
                     cursor: ProviderVisibilityMode::Hidden,
                     codex: ProviderVisibilityMode::Always,
                     deepseek: ProviderVisibilityMode::Auto,
+                    grok: ProviderVisibilityMode::Always,
                 },
                 provider_order: vec![
                     "deepseek".into(),
                     "cursor".into(),
                     "codex".into(),
+                    "grok".into(),
                 ],
                 show_system_section: false,
                 show_latency_section: true,

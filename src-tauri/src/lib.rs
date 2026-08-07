@@ -2,31 +2,55 @@ mod commands;
 mod credentials;
 mod models;
 mod network;
+mod platform_paths;
 mod providers;
 mod settings;
 mod system;
 
 use commands::AppState;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{
     image::Image,
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    window::{Color, Effect, EffectState, EffectsBuilder},
+    window::Color,
     LogicalPosition, LogicalSize, Manager, Monitor, PhysicalPosition, PhysicalSize, Position, Rect,
     Size, WebviewWindow, WindowEvent,
 };
+#[cfg(target_os = "macos")]
+use tauri::window::{Effect, EffectState, EffectsBuilder};
 
 /// 菜单栏下方锚点（逻辑点）。
 const MENU_BAR_OFFSET_LOGICAL: f64 = 28.0;
+/// GNOME 等顶栏托盘图标默认在右侧；无 tray 几何时的右边距。
+const LINUX_TRAY_RIGHT_MARGIN_LOGICAL: f64 = 12.0;
+/// 窗口尚未 layout 时 outer_size 可能为 0，定位用默认逻辑宽（与 tauri.conf / 前端一致）。
+const PANEL_DEFAULT_LOGICAL_WIDTH: f64 = 360.0;
+const PANEL_DEFAULT_LOGICAL_HEIGHT: f64 = 320.0;
 
 /// 面板最近一次 show 的时间戳（毫秒），用于忽略紧随其后的失焦。
 static PANEL_SHOWN_AT_MS: AtomicU64 = AtomicU64::new(0);
 /// 全屏 /「点壁纸显示桌面」后 show→focus 抖动更久，grace 放宽避免刚弹出就被 hide。
+#[cfg(target_os = "macos")]
 const BLUR_GRACE_MS: u64 = 1200;
+/// Linux/Wayland：show 后 Focused(false) 更晚更密，grace 加长。
+#[cfg(not(target_os = "macos"))]
+const BLUR_GRACE_MS: u64 = 2800;
 /// 主面板正在拖拽排序时抑制失焦 hide，避免拖到一半窗口被关掉。
 static PANEL_DRAG_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// Linux AppIndicator 常无法在 show 时给出 tray.rect；缓存 Click/Enter/Move 的几何。
+#[derive(Clone, Copy, Debug)]
+struct CachedTrayGeom {
+    pos: PhysicalPosition<f64>,
+    size: PhysicalSize<f64>,
+}
+
+static CACHED_TRAY_GEOM: Mutex<Option<CachedTrayGeom>> = Mutex::new(None);
+/// 最近一次成功计算出的面板逻辑坐标（Linux reanchor 复用，避免又跟鼠标跑）。
+static LAST_PANEL_LOGICAL_POS: Mutex<Option<(f64, f64)>> = Mutex::new(None);
 
 fn now_ms() -> u64 {
     SystemTime::now()
@@ -39,6 +63,7 @@ fn mark_panel_shown() {
     PANEL_SHOWN_AT_MS.store(now_ms(), Ordering::SeqCst);
 }
 
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn should_hide_on_blur() -> bool {
     if PANEL_DRAG_ACTIVE.load(Ordering::SeqCst) {
         return false;
@@ -143,16 +168,71 @@ fn cocoa_frame_center_on_screen(
 }
 
 fn panel_logical_size(window: &WebviewWindow) -> Option<LogicalSize<f64>> {
-    let scale = window.scale_factor().ok()?;
-    if scale <= 0.0 {
-        return None;
-    }
-    let size = window.outer_size().ok()?;
-    Some(size.to_logical::<f64>(scale))
+    let scale = window.scale_factor().ok().filter(|s| *s > 0.0).unwrap_or(1.0);
+    let size = window.outer_size().ok();
+    let logical = size.map(|s| s.to_logical::<f64>(scale));
+    // show 前 outer 常为 0×0；用配置默认宽高，否则 clamp 会把 x 当成「光标 x」。
+    let w = logical
+        .as_ref()
+        .map(|s| s.width)
+        .filter(|w| *w >= 32.0)
+        .unwrap_or(PANEL_DEFAULT_LOGICAL_WIDTH);
+    let h = logical
+        .as_ref()
+        .map(|s| s.height)
+        .filter(|h| *h >= 32.0)
+        .unwrap_or(PANEL_DEFAULT_LOGICAL_HEIGHT);
+    Some(LogicalSize::new(w, h))
 }
 
+/// 将面板移到逻辑坐标 (x,y)。Linux/Wayland 上 Logical 常被忽略，优先写 Physical。
 fn set_panel_logical_position(window: &WebviewWindow, x: f64, y: f64) {
-    let _ = window.set_position(Position::Logical(LogicalPosition::new(x, y)));
+    if let Ok(mut g) = LAST_PANEL_LOGICAL_POS.lock() {
+        *g = Some((x, y));
+    }
+
+    let scale = window
+        .scale_factor()
+        .ok()
+        .filter(|s| *s > 0.0)
+        .or_else(|| {
+            window
+                .primary_monitor()
+                .ok()
+                .flatten()
+                .map(|m| m.scale_factor())
+                .filter(|s| *s > 0.0)
+        })
+        .unwrap_or(1.0);
+
+    let px = (x * scale).round() as i32;
+    let py = (y * scale).round() as i32;
+
+    // 1) Physical（X11 / 部分 Wayland 合成器更认）
+    if let Err(e) = window.set_position(Position::Physical(PhysicalPosition::new(px, py))) {
+        eprintln!("[meterbar] set_position physical err={e}");
+    }
+    let outer_phys = window.outer_position();
+    eprintln!(
+        "[meterbar] set_pos target_logical=({x:.1},{y:.1}) scale={scale:.2} physical=({px},{py}) outer={outer_phys:?}"
+    );
+
+    // 2) 仍在原点则再试 Logical
+    let still_origin = matches!(outer_phys, Ok(p) if p.x.abs() < 2 && p.y.abs() < 2)
+        && (x > 8.0 || y > 8.0);
+    if still_origin {
+        if let Err(e) = window.set_position(Position::Logical(LogicalPosition::new(x, y))) {
+            eprintln!("[meterbar] set_position logical err={e}");
+        }
+        eprintln!(
+            "[meterbar] set_pos logical retry outer={:?}",
+            window.outer_position()
+        );
+    }
+}
+
+fn last_panel_logical_pos() -> Option<(f64, f64)> {
+    LAST_PANEL_LOGICAL_POS.lock().ok().and_then(|g| *g)
 }
 
 /// 菜单栏图标逻辑高度典型约 22pt；用于在多屏不同 scale 下消歧。
@@ -222,7 +302,60 @@ fn cursor_logical_position(window: &WebviewWindow) -> Option<LogicalPosition<f64
         .map(|m| m.scale_factor())
         .filter(|s| *s > 0.0)
         .or_else(|| window.scale_factor().ok().filter(|s| *s > 0.0))?;
-    Some(cursor.to_logical::<f64>(primary_scale))
+    let logical = cursor.to_logical::<f64>(primary_scale);
+    // Wayland 上未移动指针时常回报 (0,0)，不能当真。
+    if !cursor_logical_is_usable(logical) {
+        return None;
+    }
+    Some(logical)
+}
+
+fn cursor_logical_is_usable(c: LogicalPosition<f64>) -> bool {
+    // 原点附近视为无效；真实点击托盘时 x/y 至少有一侧明显离开 0。
+    !(c.x.abs() < 1.5 && c.y.abs() < 1.5)
+}
+
+fn remember_tray_rect(rect: &Rect) {
+    let (x, y) = match rect.position {
+        Position::Physical(p) => (p.x as f64, p.y as f64),
+        Position::Logical(p) => {
+            // 缓存时先按 1.0 存逻辑，取出时再当 physical 用会偏；尽量只缓存 physical。
+            // 若只有 logical，按 scale=1 记，position_panel 路径会再 to_physical。
+            (p.x, p.y)
+        }
+    };
+    let (w, h) = match rect.size {
+        Size::Physical(s) => (s.width as f64, s.height as f64),
+        Size::Logical(s) => (s.width, s.height),
+    };
+    if w <= 0.5 || h <= 0.5 {
+        return;
+    }
+    if let Ok(mut g) = CACHED_TRAY_GEOM.lock() {
+        *g = Some(CachedTrayGeom {
+            pos: PhysicalPosition { x, y },
+            size: PhysicalSize {
+                width: w,
+                height: h,
+            },
+        });
+        eprintln!("[meterbar] cached tray geom phys=({x:.1},{y:.1})x({w:.1}x{h:.1})");
+    }
+}
+
+fn cached_tray_rect() -> Option<Rect> {
+    let g = CACHED_TRAY_GEOM.lock().ok()?;
+    let c = (*g)?;
+    Some(Rect {
+        position: Position::Physical(PhysicalPosition {
+            x: c.pos.x as i32,
+            y: c.pos.y as i32,
+        }),
+        size: Size::Physical(PhysicalSize {
+            width: c.size.width as u32,
+            height: c.size.height as u32,
+        }),
+    })
 }
 
 /// 仅按逻辑 X 命中屏（Y 在 Retina/全屏下不可靠）。
@@ -242,49 +375,107 @@ fn panel_y_on_monitor(
     monitor: &Monitor,
     tray_logical: Option<(LogicalPosition<f64>, LogicalSize<f64>)>,
 ) -> f64 {
-    let Some((_ox, oy, _ow, _oh)) = monitor_logical_bounds(monitor) else {
+    let Some((_ox, oy, _ow, oh)) = monitor_logical_bounds(monitor) else {
         return MENU_BAR_OFFSET_LOGICAL;
     };
     if let Some((pos, size)) = tray_logical {
-        // 仅当 tray Y 落在菜单栏带内才采用；否则用屏顶 + 偏移（规避 Retina Y 翻转）。
+        let bottom = pos.y + size.height + 4.0;
+        // 顶栏托盘（macOS 菜单栏 / GNOME 顶栏）：图标在屏顶附近。
         if pos.y >= oy && pos.y <= oy + MENU_BAR_BAND_LOGICAL {
-            return pos.y + size.height + 4.0;
+            return bottom.max(oy + MENU_BAR_OFFSET_LOGICAL);
         }
+        // Linux 底栏 / 侧栏：图标在屏下方或其它位置时，仍尽量贴在图标外侧。
+        #[cfg(not(target_os = "macos"))]
+        {
+            if size.height > 0.0 && size.height < 80.0 {
+                // 靠近底边：面板开在图标上方会更合理，但当前 UI 假定向下展开；
+                // 先贴图标下方并夹到可见区内。
+                let max_y = oy + oh - 40.0;
+                return bottom.clamp(oy + 4.0, max_y);
+            }
+        }
+        let _ = oh;
     }
     oy + MENU_BAR_OFFSET_LOGICAL
 }
 
-/// 无 tray 时：鼠标所在屏 → 主屏 → 窗口当前屏；锚在菜单栏下方。
-/// 注意：current_monitor 常是面板上次所在的副屏，全屏点击时不能优先于鼠标/主屏。
+/// 无 tray 时：缓存 tray →（macOS）鼠标 → 主屏顶栏右侧（GNOME 指示器区）。
+/// Linux 上 **不要** 用屏幕中部的 cursor 当锚点（点托盘时指针常不在顶栏）。
 fn position_panel_fallback(window: &WebviewWindow) {
     let Some(panel) = panel_logical_size(window) else {
         return;
     };
 
+    // 若有缓存托盘几何，走 tao 主路径（比「瞎猜右上」准）。
+    if let Some(rect) = cached_tray_rect() {
+        eprintln!("[meterbar] fallback using cached tray rect");
+        position_panel_near_tray_tao(window, Some(rect));
+        return;
+    }
+
     let cursor = cursor_logical_position(window);
-    let monitor = cursor
-        .as_ref()
-        .and_then(|c| monitor_containing_logical_x(window, c.x))
-        .or_else(|| window.primary_monitor().ok().flatten())
-        .or_else(|| window.current_monitor().ok().flatten());
+    let monitor = {
+        #[cfg(target_os = "macos")]
+        {
+            cursor
+                .as_ref()
+                .and_then(|c| monitor_containing_logical_x(window, c.x))
+                .or_else(|| window.primary_monitor().ok().flatten())
+                .or_else(|| window.current_monitor().ok().flatten())
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            window
+                .primary_monitor()
+                .ok()
+                .flatten()
+                .or_else(|| window.current_monitor().ok().flatten())
+        }
+    };
 
     let Some(monitor) = monitor else {
         eprintln!("[meterbar] fallback: no monitor");
         return;
     };
-    let Some((ox, _oy, ow, _oh)) = monitor_logical_bounds(&monitor) else {
+    let Some((ox, oy, ow, _oh)) = monitor_logical_bounds(&monitor) else {
         return;
     };
 
-    let x = if let Some(c) = cursor {
-        clamp_panel_x(c.x - panel.width / 2.0, panel.width, ox, ow)
+    #[cfg(target_os = "macos")]
+    let (x, y, via) = if let Some(c) = cursor {
+        (
+            clamp_panel_x(c.x - panel.width / 2.0, panel.width, ox, ow),
+            panel_y_on_monitor(&monitor, None),
+            "cursor",
+        )
     } else {
-        clamp_panel_x(ox + ow - panel.width - 16.0, panel.width, ox, ow)
+        let x = clamp_panel_x(
+            ox + ow - panel.width - LINUX_TRAY_RIGHT_MARGIN_LOGICAL,
+            panel.width,
+            ox,
+            ow,
+        );
+        (x, oy + MENU_BAR_OFFSET_LOGICAL, "top_right")
     };
-    let y = panel_y_on_monitor(&monitor, None);
+
+    // Linux/GNOME：指示器在顶栏右侧；AppIndicator 无 rect 时固定锚右上。
+    #[cfg(not(target_os = "macos"))]
+    let (x, y, via) = {
+        let x = clamp_panel_x(
+            ox + ow - panel.width - LINUX_TRAY_RIGHT_MARGIN_LOGICAL,
+            panel.width,
+            ox,
+            ow,
+        );
+        let y = oy + MENU_BAR_OFFSET_LOGICAL;
+        (x, y, "top_right")
+    };
+
     eprintln!(
-        "[meterbar] fallback mon=({ox:.0},{ow:.0}) scale={:.2} panel=({x:.1},{y:.1}) cursor={:?}",
+        "[meterbar] fallback via={via} mon=({ox:.0},{oy:.0},{ow:.0}) scale={:.2} panel=({x:.1},{y:.1}) size=({:.0}x{:.0}) cursor={:?}",
         monitor.scale_factor(),
+        panel.width,
+        panel.height,
         cursor.map(|c| (c.x, c.y))
     );
     set_panel_logical_position(window, x, y);
@@ -293,17 +484,41 @@ fn position_panel_fallback(window: &WebviewWindow) {
 /// 托盘 id：macOS 上用于取出 NSStatusItem → button.window.screen。
 const METERBAR_TRAY_ID: &str = "meterbar";
 
+/// 从 tray 图标查询几何（菜单 Open / 启动 show 时常无 click rect）。
+fn tray_icon_rect(app: &tauri::AppHandle) -> Option<Rect> {
+    if let Some(tray) = app.tray_by_id(METERBAR_TRAY_ID) {
+        match tray.rect() {
+            Ok(Some(r)) => {
+                let size = physical_tray_size(&r, 1.0);
+                if size.width > 0.5 && size.height > 0.5 {
+                    remember_tray_rect(&r);
+                    return Some(r);
+                }
+            }
+            Ok(None) => {
+                eprintln!("[meterbar] tray.rect() = None");
+            }
+            Err(e) => {
+                eprintln!("[meterbar] tray.rect() err={e}");
+            }
+        }
+    }
+    cached_tray_rect()
+}
+
 /// 每次 show/toggle 重算面板位置。
 ///
 /// macOS：以「被点击的 status item 窗口 / click tray_rect」定屏为不变量；
 /// 禁止用全局唯一 `NSStatusItem.button.window`（多屏镜像菜单栏时常锚到主屏那份）。
 /// 无 click 信息时：全屏 menubar 焦点屏 → mouse →（弱）status item。
-/// 非 macOS 或 AppKit 失败时退回 tao 逻辑。
+/// 非 macOS 或 AppKit 失败时退回 tao 逻辑；Linux 优先 click rect，否则 `tray.rect()`。
 fn position_panel_near_tray(
     app: &tauri::AppHandle,
     window: &WebviewWindow,
     tray_rect: Option<Rect>,
 ) {
+    let tray_rect = tray_rect.or_else(|| tray_icon_rect(app));
+
     #[cfg(target_os = "macos")]
     {
         if position_panel_via_appkit(app, window, tray_rect) {
@@ -311,8 +526,6 @@ fn position_panel_near_tray(
         }
         eprintln!("[meterbar] appkit position unavailable, falling back to tao");
     }
-    #[cfg(not(target_os = "macos"))]
-    let _ = app;
     position_panel_near_tray_tao(window, tray_rect);
 }
 
@@ -398,6 +611,7 @@ fn nsscreen_same(
 }
 
 /// 点击事件里的 tray 物理矩形（tray-icon 按 **被点击窗口** 的 backingScaleFactor 编码）。
+#[cfg(target_os = "macos")]
 fn tray_event_physical(tray_rect: &Rect) -> Option<(f64, f64, f64, f64)> {
     let (x, y) = match tray_rect.position {
         Position::Physical(p) => (p.x as f64, p.y as f64),
@@ -965,7 +1179,8 @@ fn panel_is_effectively_shown(window: &WebviewWindow) -> bool {
 
 #[cfg(not(target_os = "macos"))]
 fn panel_is_effectively_shown(window: &WebviewWindow) -> bool {
-    window.is_visible().unwrap_or(false) && window.is_focused().unwrap_or(false)
+    // Wayland/GNOME 下无边框窗常 is_focused=false，不能与 macOS 一样强依赖 focus。
+    window.is_visible().unwrap_or(false)
 }
 
 fn show_panel(app: &tauri::AppHandle, tray_rect: Option<Rect>) {
@@ -973,42 +1188,96 @@ fn show_panel(app: &tauri::AppHandle, tray_rect: Option<Rect>) {
         eprintln!("[meterbar] show_panel: main window missing");
         return;
     };
+    if let Some(ref r) = tray_rect {
+        remember_tray_rect(r);
+    }
+    let tray_rect = tray_rect.or_else(|| tray_icon_rect(app));
+
     #[cfg(target_os = "macos")]
     configure_panel_for_fullscreen_spaces(&window);
-    // show 前钉一次；show / orderFront / set_focus 后再强制钉到 status item 屏。
-    position_panel_near_tray(app, &window, tray_rect);
-    // 尽早开 grace，覆盖 show→focus 期间的 Focused(false)（显示桌面收窗后尤其密集）。
+
+    // 尽早开 grace，覆盖 show→focus 期间的 Focused(false)。
     mark_panel_shown();
-    let show_res = window.show();
-    position_panel_near_tray(app, &window, tray_rect);
+
+    // Linux：先 show 再定位（X11/Wayland 在 map 前 set_position 常被丢掉 → outer 一直 0,0）。
+    #[cfg(not(target_os = "macos"))]
+    {
+        let show_res = window.show();
+        let _ = window.unminimize();
+        position_panel_near_tray(app, &window, tray_rect);
+        let focus_res = window.set_focus();
+        // 再钉一次：show 后 outer_size 才可靠，且 WM 已 map 窗口。
+        position_panel_near_tray(app, &window, tray_rect);
+        mark_panel_shown();
+
+        let app2 = app.clone();
+        let _ = window.run_on_main_thread(move || {
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(80));
+                if let Some(w) = app2.get_webview_window("main") {
+                    let _ = w.show();
+                    // 优先复用上次逻辑坐标，避免 reanchor 时又去读鼠标。
+                    if let Some((x, y)) = last_panel_logical_pos() {
+                        set_panel_logical_position(&w, x, y);
+                    } else {
+                        position_panel_near_tray(&app2, &w, tray_icon_rect(&app2));
+                    }
+                    let _ = w.set_focus();
+                    eprintln!(
+                        "[meterbar] linux reanchor +80ms visible={:?} outer={:?}",
+                        w.is_visible(),
+                        w.outer_position()
+                    );
+                }
+            });
+        });
+
+        eprintln!(
+            "[meterbar] show_panel(linux) show={show_res:?} focus={focus_res:?} visible={:?} outer={:?}",
+            window.is_visible(),
+            window.outer_position(),
+        );
+        return;
+    }
+
     #[cfg(target_os = "macos")]
     {
+        position_panel_near_tray(app, &window, tray_rect);
+        let show_res = window.show();
+        position_panel_near_tray(app, &window, tray_rect);
         order_panel_front(&window);
         correct_panel_frame_after_show(app, &window, tray_rect);
-    }
-    // 需要 key 窗口才能靠 Focused(false) 点外关闭；Accessory 下通常不抢 Dock。
-    let focus_res = window.set_focus();
-    #[cfg(target_os = "macos")]
-    {
+        let focus_res = window.set_focus();
         order_panel_front(&window);
         correct_panel_frame_after_show(app, &window, tray_rect);
+        mark_panel_shown();
+        eprintln!(
+            "[meterbar] show_panel show={show_res:?} focus={focus_res:?} visible={:?} focused={:?} outer={:?}",
+            window.is_visible(),
+            window.is_focused(),
+            window.outer_position(),
+        );
     }
-    // focus 完成后再刷一次 grace，避免刚获得 key 又被系统抢焦立刻 hide。
-    mark_panel_shown();
-    eprintln!(
-        "[meterbar] show_panel show={show_res:?} focus={focus_res:?} visible={:?} focused={:?}",
-        window.is_visible(),
-        window.is_focused()
-    );
 }
 
 fn hide_panel_if_blurred(window: &WebviewWindow) {
-    if !should_hide_on_blur() {
-        eprintln!("[meterbar] hide_panel skipped (blur grace / drag)");
+    // Wayland/GNOME：Focused(false) 不可靠，且 show 后常立即失焦；
+    // 关闭只靠托盘左键 toggle，避免「闪一下就没了」。
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = window;
+        eprintln!("[meterbar] hide_panel skipped (linux: tray-toggle only, no blur-hide)");
         return;
     }
-    eprintln!("[meterbar] hide_panel on blur");
-    let _ = window.hide();
+    #[cfg(target_os = "macos")]
+    {
+        if !should_hide_on_blur() {
+            eprintln!("[meterbar] hide_panel skipped (blur grace / drag)");
+            return;
+        }
+        eprintln!("[meterbar] hide_panel on blur");
+        let _ = window.hide();
+    }
 }
 
 fn toggle_panel(app: &tauri::AppHandle, tray_rect: Option<Rect>) {
@@ -1086,13 +1355,19 @@ pub fn run() {
         // macOS：必须用 AppleScript 注册 .app bundle；LaunchAgent 会注册裸二进制，
         // 导致「登录项 / 允许在后台」显示 exec 图标与可执行文件名（如 usages）。
         .plugin({
-            let mut builder = tauri_plugin_autostart::Builder::new().app_name("Meterbar");
             #[cfg(target_os = "macos")]
             {
-                builder = builder
-                    .macos_launcher(tauri_plugin_autostart::MacosLauncher::AppleScript);
+                tauri_plugin_autostart::Builder::new()
+                    .app_name("Meterbar")
+                    .macos_launcher(tauri_plugin_autostart::MacosLauncher::AppleScript)
+                    .build()
             }
-            builder.build()
+            #[cfg(not(target_os = "macos"))]
+            {
+                tauri_plugin_autostart::Builder::new()
+                    .app_name("Meterbar")
+                    .build()
+            }
         })
         .manage(AppState::default())
         .setup(|app| {
@@ -1116,42 +1391,67 @@ pub fn run() {
             let quit = MenuItem::with_id(app, "quit", "Quit Meterbar", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&open, &quit])?;
 
-            // 菜单栏专用黑字透明底；macOS template 会随菜单栏自动着色。
+            // macOS：黑字透明 template；Linux：彩色 app 图标（黑 template 在深色顶栏几乎不可见）。
+            #[cfg(target_os = "macos")]
             let icon = Image::from_bytes(include_bytes!("../icons/tray-icon.png"))
-                .expect("failed to load tray template icon");
+                .expect("failed to load tray icon");
+            #[cfg(not(target_os = "macos"))]
+            let icon = Image::from_bytes(include_bytes!("../icons/tray-icon-linux.png"))
+                .expect("failed to load tray icon");
 
             let _tray = TrayIconBuilder::with_id(METERBAR_TRAY_ID)
                 .icon(icon)
-                .icon_as_template(true)
+                .icon_as_template(cfg!(target_os = "macos"))
                 .menu(&menu)
+                // 左键 toggle 面板（带 tray rect 锚点）；右键菜单。勿在 Linux 上左键只出菜单，否则无法锚到图标。
                 .show_menu_on_left_click(false)
-                .tooltip("Meterbar — 左键打开面板，右键打开菜单")
+                .tooltip("Meterbar — 左键打开面板，右键菜单")
                 .on_menu_event(|app, event| match event.id.as_ref() {
-                    "open" => show_panel(app, None),
+                    "open" => show_panel(app, tray_icon_rect(app)),
                     "quit" => app.exit(0),
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {
-                    if let TrayIconEvent::Click {
-                        button: MouseButton::Left,
-                        button_state: MouseButtonState::Up,
-                        rect,
-                        ..
-                    } = event
-                    {
-                        toggle_panel(tray.app_handle(), Some(rect));
+                    match event {
+                        TrayIconEvent::Click {
+                            button: MouseButton::Left,
+                            button_state: MouseButtonState::Up,
+                            rect,
+                            ..
+                        } => {
+                            remember_tray_rect(&rect);
+                            toggle_panel(tray.app_handle(), Some(rect));
+                        }
+                        TrayIconEvent::Click {
+                            button: MouseButton::Right,
+                            button_state: MouseButtonState::Up,
+                            rect,
+                            ..
+                        } => {
+                            // 右键出菜单前也缓存几何，便于菜单「Open」锚点。
+                            remember_tray_rect(&rect);
+                        }
+                        TrayIconEvent::Enter { rect, .. }
+                        | TrayIconEvent::Move { rect, .. } => {
+                            remember_tray_rect(&rect);
+                        }
+                        _ => {}
                     }
                 })
                 .build(app)?;
 
+            eprintln!(
+                "[meterbar] tray ready — left-click panel under icon; right-click menu; Open uses cached tray geom"
+            );
+
             let app_handle = app.handle().clone();
             if let Some(window) = app.get_webview_window("main") {
-                // 窗口 + WKWebView 均需透明，否则 NSVisualEffectView（BehindWindow）被不透明白底盖住
-                if let Err(err) = window.set_background_color(Some(Color(0, 0, 0, 0))) {
-                    eprintln!("set_background_color failed: {err}");
-                }
                 #[cfg(target_os = "macos")]
                 {
+                    // 窗口 + WKWebView 均需透明，否则 NSVisualEffectView 被不透明白底盖住
+                    if let Err(err) = window.set_background_color(Some(Color(0, 0, 0, 0))) {
+                        eprintln!("set_background_color failed: {err}");
+                    }
                     configure_panel_for_fullscreen_spaces(&window);
                     if let Err(err) = window.set_effects(
                         EffectsBuilder::new()
@@ -1162,6 +1462,20 @@ pub fn run() {
                     ) {
                         eprintln!("set_effects failed: {err}");
                     }
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    // 不透明底 + 进任务栏；Wayland 下 transparent 窗常无法定位/显示。
+                    if let Err(err) = window.set_background_color(Some(Color(248, 249, 251, 255))) {
+                        eprintln!("set_background_color failed: {err}");
+                    }
+                    let _ = window.set_skip_taskbar(false);
+                    let _ = window.set_always_on_top(true);
+                    // 不在启动时强制 show：tray.rect/monitor 常未就绪，且会触发 blur 竞态。
+                    // 用户左键托盘后再弹出（此时定位与显示更稳）。
+                    eprintln!(
+                        "[meterbar] linux ready — click tray icon to open panel (no auto-popup)"
+                    );
                 }
                 window.on_window_event(move |event| {
                     if let WindowEvent::Focused(false) = event {
@@ -1182,6 +1496,7 @@ pub fn run() {
             commands::refresh_cursor,
             commands::refresh_codex,
             commands::refresh_deepseek,
+            commands::refresh_grok,
             commands::refresh_system,
             commands::refresh_system_fast,
             commands::refresh_latency,

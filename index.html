@@ -160,6 +160,36 @@
             </div>
           </article>
 
+          <article
+            class="provider-block provider-sortable hidden"
+            id="card-grok"
+            data-provider="grok"
+            data-reading="percent"
+            aria-label="Grok 用量"
+          >
+            <div class="provider-hero">
+              <div class="hero-head">
+                <span class="hero-name">Grok</span>
+                <span class="hero-value">
+                  <span id="grok-hero-num">—</span><span class="hero-unit" id="grok-hero-unit"></span>
+                </span>
+              </div>
+              <div class="hero-sub" id="grok-hero-sub"></div>
+              <span class="hero-period hidden" id="grok-hero-period" aria-hidden="true"></span>
+              <div class="hero-progress" aria-hidden="true">
+                <div class="hero-progress-fill" id="grok-hero-fill"></div>
+              </div>
+              <p class="card-alert hidden" id="grok-alert"></p>
+            </div>
+            <div class="provider-strip">
+              <span class="strip-name">Grok</span>
+              <div class="strip-bar" aria-hidden="true">
+                <div class="strip-bar-fill" id="grok-strip-fill"></div>
+              </div>
+              <span class="strip-pct" id="grok-strip-pct">—</span>
+            </div>
+          </article>
+
           <div class="secondary-band" id="secondary-band">
             <section class="sys-capsule" aria-label="系统与网络">
               <div class="sys-h">System</div>
@@ -348,6 +378,64 @@
                     type="button"
                     class="switch-always-btn"
                     id="visibility-codex-always"
+                    aria-pressed="false"
+                    hidden
+                  >
+                    始终显示
+                  </button>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section
+            class="settings-group settings-provider"
+            data-provider="grok"
+            aria-labelledby="settings-grok-title"
+          >
+            <button
+              type="button"
+              class="settings-group-toggle"
+              id="settings-grok-toggle"
+              aria-expanded="true"
+              aria-controls="settings-grok-body"
+            >
+              <span class="settings-group-title" id="settings-grok-title">Grok</span>
+              <svg class="chevron" width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
+                <path d="M2 3.5 5 6.5 8 3.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </button>
+            <div class="settings-group-body" id="settings-grok-body">
+              <div class="settings-group-body-inner">
+                <p class="field-hint settings-intro">
+                  读取本机 <code>grok login</code> 会话（~/.grok/auth.json）的 SuperGrok 周池用量。无需在此粘贴密钥；也可在浏览器打开官方 Usage。
+                </p>
+                <div class="field-actions">
+                  <button type="button" class="btn btn-default" id="btn-open-grok-usage">打开 grok.com Usage</button>
+                </div>
+                <div class="field field-switch" data-provider="grok">
+                  <div class="switch-row" data-switch-for="visibility-grok">
+                    <div class="switch-labels">
+                      <span class="field-label">看板显示</span>
+                      <span class="field-hint" id="visibility-grok-hint">自动（已配置才显示）</span>
+                    </div>
+                    <button
+                      type="button"
+                      class="ios-switch"
+                      id="visibility-grok"
+                      role="switch"
+                      aria-checked="true"
+                      aria-label="看板显示"
+                      data-provider="grok"
+                      data-mode="auto"
+                    >
+                      <span class="ios-switch-thumb" aria-hidden="true"></span>
+                    </button>
+                  </div>
+                  <button
+                    type="button"
+                    class="switch-always-btn"
+                    id="visibility-grok-always"
                     aria-pressed="false"
                     hidden
                   >

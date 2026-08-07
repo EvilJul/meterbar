@@ -5,6 +5,7 @@ import {
   enable as enableAutostart,
   isEnabled as isAutostartEnabled,
 } from "@tauri-apps/plugin-autostart";
+import { openUrl } from "@tauri-apps/plugin-opener";
 
 type ProviderStatus =
   | "ok"
@@ -67,15 +68,17 @@ interface PanelState {
   highLatencyMs: number;
   hasCursorToken: boolean;
   hasDeepseekKey: boolean;
+  hasGrokAuth: boolean;
 }
 
-type ProviderId = "cursor" | "codex" | "deepseek";
+type ProviderId = "cursor" | "codex" | "deepseek" | "grok";
 type VisibilityMode = "auto" | "always" | "hidden";
 
 interface ProviderVisibility {
   cursor: VisibilityMode;
   codex: VisibilityMode;
   deepseek: VisibilityMode;
+  grok: VisibilityMode;
 }
 
 interface AppSettings {
@@ -98,13 +101,20 @@ interface LocalSessionProbe {
   failure?: string | null;
 }
 
-const PROVIDER_IDS: ProviderId[] = ["cursor", "codex", "deepseek"];
-const DEFAULT_PROVIDER_ORDER: ProviderId[] = ["cursor", "codex", "deepseek"];
+const PROVIDER_IDS: ProviderId[] = ["cursor", "codex", "deepseek", "grok"];
+const DEFAULT_PROVIDER_ORDER: ProviderId[] = [
+  "cursor",
+  "codex",
+  "deepseek",
+  "grok",
+];
 const DEFAULT_VISIBILITY: ProviderVisibility = {
   cursor: "auto",
   codex: "auto",
   deepseek: "auto",
+  grok: "auto",
 };
+const GROK_USAGE_URL = "https://grok.com/?_s=usage";
 
 /** 与 tauri.conf.json / CSS 对齐的窗口尺寸约束 */
 const PANEL_WIDTH = 360;
@@ -365,6 +375,10 @@ function deepseekUsage(state: PanelState): UsageSnapshot | undefined {
   return state.usages.find((u) => u.provider === "deepseek");
 }
 
+function grokUsage(state: PanelState): UsageSnapshot | undefined {
+  return state.usages.find((u) => u.provider === "grok");
+}
+
 function parseVisibilityMode(raw: unknown): VisibilityMode {
   if (raw === "always" || raw === "hidden" || raw === "auto") return raw;
   return "auto";
@@ -377,7 +391,10 @@ function normalizeProviderOrder(order: unknown): ProviderId[] {
       if (typeof item !== "string") continue;
       const id = item.trim().toLowerCase();
       if (
-        (id === "cursor" || id === "codex" || id === "deepseek") &&
+        (id === "cursor" ||
+          id === "codex" ||
+          id === "deepseek" ||
+          id === "grok") &&
         !result.includes(id)
       ) {
         result.push(id);
@@ -402,6 +419,7 @@ function normalizeSettings(raw: AppSettings): AppSettings {
       cursor: parseVisibilityMode(vis.cursor),
       codex: parseVisibilityMode(vis.codex),
       deepseek: parseVisibilityMode(vis.deepseek),
+      grok: parseVisibilityMode(vis.grok),
     },
     providerOrder: normalizeProviderOrder(raw.providerOrder),
     showSystemSection: raw.showSystemSection !== false,
@@ -417,6 +435,7 @@ function normalizeSettings(raw: AppSettings): AppSettings {
 function isConfigured(provider: ProviderId, state: PanelState): boolean {
   if (provider === "deepseek") return state.hasDeepseekKey;
   if (provider === "cursor") return state.hasCursorToken;
+  if (provider === "grok") return state.hasGrokAuth;
   // Codex：可读额度且非 needs_auth / 未安装
   const snap = codexUsage(state);
   if (!snap) return false;
@@ -432,7 +451,8 @@ function shouldShowProvider(mode: VisibilityMode, configured: boolean): boolean 
 function providerDomNode(provider: ProviderId): HTMLElement | null {
   if (provider === "cursor") return document.getElementById("cursor-section");
   if (provider === "codex") return document.getElementById("card-codex");
-  return document.getElementById("card-deepseek");
+  if (provider === "deepseek") return document.getElementById("card-deepseek");
+  return document.getElementById("card-grok");
 }
 
 function setHiddenIfChanged(el: HTMLElement, hidden: boolean): void {
@@ -715,6 +735,83 @@ function renderCodex(state: PanelState): void {
   alertEl.classList.add("hidden");
 }
 
+function renderGrok(state: PanelState): void {
+  const snap = grokUsage(state);
+  const periodEl = $("grok-hero-period");
+  const subEl = $("grok-hero-sub");
+  const stripPct = $("grok-strip-pct");
+  const alertEl = $("grok-alert");
+  const heroValue = $("grok-hero-num").parentElement as HTMLElement;
+
+  if (!snap) {
+    periodEl.textContent = "";
+    setHeroValue("grok-hero-num", "grok-hero-unit", "—", "");
+    setHeroSubParts(subEl, []);
+    setProgressWidth("grok-hero-fill", null);
+    setProgressWidth("grok-strip-fill", null);
+    setTextIfChanged(stripPct, "—");
+    stripPct.removeAttribute("title");
+    applyTone(heroValue, "neutral");
+    applyTone(stripPct, "neutral");
+    alertEl.classList.add("hidden");
+    return;
+  }
+
+  periodEl.textContent = formatHeroPeriod(snap.membership, snap.periodEnd);
+  const resetInline = formatResetInline(snap.periodEnd);
+  const resetTone = periodResetTone(snap.periodEnd);
+
+  if (snap.status !== "ok") {
+    setProgressWidth("grok-hero-fill", null);
+    setProgressWidth("grok-strip-fill", null);
+    setHeroValue("grok-hero-num", "grok-hero-unit", "—", "");
+    applyTone(heroValue, "neutral");
+    applyTone(stripPct, "neutral");
+    stripPct.removeAttribute("title");
+    if (snap.status === "needs_auth") {
+      setHeroSubParts(subEl, [{ text: "需要登录" }]);
+      setTextIfChanged(stripPct, "登录");
+      alertEl.textContent =
+        snap.message || "请运行 grok login，或打开 grok.com Usage";
+    } else {
+      setHeroSubParts(subEl, [{ text: "暂不可用" }]);
+      setTextIfChanged(stripPct, "—");
+      alertEl.textContent = snap.message || "Grok 用量查询失败";
+    }
+    alertEl.classList.remove("hidden");
+    return;
+  }
+
+  const pct = snap.percentUsed;
+  if (pct != null && !Number.isNaN(pct)) {
+    setHeroValue(
+      "grok-hero-num",
+      "grok-hero-unit",
+      `${clampPercent(pct).toFixed(0)}`,
+      "%",
+    );
+    setTextIfChanged(stripPct, formatPercent(pct));
+  } else {
+    setHeroValue("grok-hero-num", "grok-hero-unit", "—", "");
+    setTextIfChanged(stripPct, "—");
+  }
+  setProgressWidth("grok-hero-fill", pct, resetTone);
+  setProgressWidth("grok-strip-fill", pct, resetTone);
+  const tone = worseTone(usageTone(pct), resetTone);
+  applyTone(heroValue, tone);
+  applyTone(stripPct, tone);
+  stripPct.title = resetInline || "";
+  const subParts: HeroSubPart[] = [
+    { text: snap.message?.trim() || "周池用量" },
+  ];
+  if (resetInline) {
+    subParts.push({ text: resetInline, tone: resetTone });
+  }
+  setHeroSubParts(subEl, subParts);
+  alertEl.textContent = "";
+  alertEl.classList.add("hidden");
+}
+
 function renderDeepSeek(state: PanelState): void {
   const snap = deepseekUsage(state);
   const periodEl = $("deepseek-hero-period");
@@ -958,6 +1055,7 @@ function renderPanel(state: PanelState): void {
   renderCursor(state);
   renderCodex(state);
   renderDeepSeek(state);
+  renderGrok(state);
   renderSystem(state);
   renderLatency(state);
   renderFooter(state);
@@ -1114,8 +1212,9 @@ async function refreshAll(): Promise<void> {
 async function refreshProvidersOnly(): Promise<void> {
   try {
     await invoke<UsageSnapshot>("refresh_cursor");
-    // Codex 与 Cursor 同轮 best-effort；失败由快照状态表达，不中断其它卡。
+    // Codex / Grok 与 Cursor 同轮 best-effort；失败由快照状态表达，不中断其它卡。
     await invoke<UsageSnapshot>("refresh_codex");
+    await invoke<UsageSnapshot>("refresh_grok");
     if (panelState?.hasDeepseekKey) {
       await invoke<UsageSnapshot>("refresh_deepseek");
     }
@@ -1349,7 +1448,12 @@ async function persistSettingsPatch(
 }
 
 function isProviderId(value: string | undefined): value is ProviderId {
-  return value === "cursor" || value === "codex" || value === "deepseek";
+  return (
+    value === "cursor" ||
+    value === "codex" ||
+    value === "deepseek" ||
+    value === "grok"
+  );
 }
 
 /** 读取主面板当前可见供应商节点（DOM 顺序，不含 System/Latency）。 */
@@ -2120,6 +2224,15 @@ function bindUi(): void {
     }
   });
 
+  $("btn-open-grok-usage")?.addEventListener("click", () => {
+    void openUrl(GROK_USAGE_URL).catch((err) => {
+      console.error("open grok usage failed", err);
+      const msg = $("settings-msg");
+      msg.textContent = `无法打开浏览器：${String(err)}`;
+      msg.className = "settings-msg error";
+    });
+  });
+
   for (const id of PROVIDER_IDS) {
     const switchEl = document.getElementById(
       `visibility-${id}`,
@@ -2279,6 +2392,7 @@ function bindUi(): void {
         cursor: readVisibilityMode("cursor"),
         codex: readVisibilityMode("codex"),
         deepseek: readVisibilityMode("deepseek"),
+        grok: readVisibilityMode("grok"),
       },
       providerOrder: normalizeProviderOrder(currentSettings.providerOrder),
       showSystemSection: isShowSystemOn(),
@@ -2303,6 +2417,10 @@ function markPanelShown(): void {
 
 window.addEventListener("DOMContentLoaded", () => {
   document.documentElement.dataset.app = "usages";
+  // 非 macOS：无 NSVisualEffectView / hudWindow，启用不透明面板底
+  const ua = navigator.userAgent;
+  const isMac = /Mac OS X|Macintosh/.test(ua);
+  document.documentElement.classList.toggle("no-vibrancy", !isMac);
   bindUi();
   void (async () => {
     try {

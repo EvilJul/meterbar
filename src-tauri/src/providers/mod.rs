@@ -4,6 +4,7 @@
 pub mod codex;
 pub mod cursor;
 pub mod deepseek;
+pub mod grok;
 
 /// 用量 Provider 接口骨架（后续实现真实取数）。
 pub trait UsageProvider: Send + Sync {

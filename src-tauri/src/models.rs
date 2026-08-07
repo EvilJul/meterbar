@@ -127,6 +127,8 @@ pub struct PanelState {
     pub has_cursor_token: bool,
     /// 是否已配置 DeepSeek API Key（不回显内容）。
     pub has_deepseek_key: bool,
+    /// 是否发现本机 Grok / SuperGrok 登录态（不回显 token）。
+    pub has_grok_auth: bool,
 }
 
 /// 看板供应商显示三态。
@@ -151,6 +153,7 @@ pub struct ProviderVisibility {
     pub cursor: ProviderVisibilityMode,
     pub codex: ProviderVisibilityMode,
     pub deepseek: ProviderVisibilityMode,
+    pub grok: ProviderVisibilityMode,
 }
 
 impl Default for ProviderVisibility {
@@ -159,6 +162,7 @@ impl Default for ProviderVisibility {
             cursor: ProviderVisibilityMode::Auto,
             codex: ProviderVisibilityMode::Auto,
             deepseek: ProviderVisibilityMode::Auto,
+            grok: ProviderVisibilityMode::Auto,
         }
     }
 }
@@ -179,7 +183,7 @@ pub struct AppSettings {
     pub high_latency_ms: u64,
     /// 各模型供应商看板显示模式；默认全 `auto`。
     pub provider_visibility: ProviderVisibility,
-    /// 模型供应商看板顺序；仅含 cursor/codex/deepseek。
+    /// 模型供应商看板顺序；仅含 cursor/codex/deepseek/grok。
     pub provider_order: Vec<String>,
     /// 是否显示 System 卡片；默认 true。
     pub show_system_section: bool,
@@ -219,7 +223,7 @@ impl AppSettings {
     pub const DEFAULT_HIGH_LATENCY_MS: u64 = 500;
     pub const MIN_HIGH_LATENCY_MS: u64 = 1;
 
-    pub const PROVIDER_IDS: [&'static str; 3] = ["cursor", "codex", "deepseek"];
+    pub const PROVIDER_IDS: [&'static str; 4] = ["cursor", "codex", "deepseek", "grok"];
 
     pub fn default_provider_order() -> Vec<String> {
         Self::PROVIDER_IDS
@@ -298,6 +302,7 @@ impl AppSettings {
             "cursor" => self.provider_visibility.cursor,
             "codex" => self.provider_visibility.codex,
             "deepseek" => self.provider_visibility.deepseek,
+            "grok" => self.provider_visibility.grok,
             _ => ProviderVisibilityMode::Auto,
         }
     }
