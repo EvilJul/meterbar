@@ -6,6 +6,19 @@ macOS 菜单栏与 **Linux 系统托盘**：本机查看 Cursor / Codex /（可�
 
 ![Meterbar](docs/banner.png)
 
+## 支持的供应商
+
+当前看板支持以下模型供应商（代码：`src-tauri/src/providers/`；顺序默认 cursor → codex → deepseek → grok）：
+
+| 供应商 | ID | 数据来源 |
+|--------|----|----------|
+| **Cursor** | `cursor` | 本机 Cursor 会话（`state.vscdb` / `accessToken`）；可选 Session Cookie 兜底 |
+| **Codex** | `codex` | 本机 Codex CLI `app-server`（`account/rateLimits/read`） |
+| **DeepSeek** | `deepseek` | DeepSeek API `GET /user/balance`（需配置 API key） |
+| **Grok** | `grok` | 本机 `grok login`（`~/.grok/auth.json`）→ SuperGrok 周池 credits（非 xAI 开发者 API） |
+
+可见性可在设置中按家配置为 `auto` / `always` / `hidden`，并支持拖拽排序。
+
 ## 功能
 
 - **托盘应用** — 点击托盘图标打开紧凑面板（Tauri 2）。
