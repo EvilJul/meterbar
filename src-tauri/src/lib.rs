@@ -35,9 +35,9 @@ static PANEL_SHOWN_AT_MS: AtomicU64 = AtomicU64::new(0);
 /// 全屏 /「点壁纸显示桌面」后 show→focus 抖动更久，grace 放宽避免刚弹出就被 hide。
 #[cfg(target_os = "macos")]
 const BLUR_GRACE_MS: u64 = 1200;
-/// Linux/Wayland：show 后 Focused(false) 更晚更密，grace 加长。
+/// Linux：过长 grace 会让「点空白关闭」在数秒内无效；X11/XWayland 下 600ms 足够吞掉 show 抖动。
 #[cfg(not(target_os = "macos"))]
-const BLUR_GRACE_MS: u64 = 2800;
+const BLUR_GRACE_MS: u64 = 600;
 /// 主面板正在拖拽排序时抑制失焦 hide，避免拖到一半窗口被关掉。
 static PANEL_DRAG_ACTIVE: AtomicBool = AtomicBool::new(false);
 
@@ -63,7 +63,6 @@ fn mark_panel_shown() {
     PANEL_SHOWN_AT_MS.store(now_ms(), Ordering::SeqCst);
 }
 
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn should_hide_on_blur() -> bool {
     if PANEL_DRAG_ACTIVE.load(Ordering::SeqCst) {
         return false;
@@ -205,13 +204,38 @@ fn set_panel_logical_position(window: &WebviewWindow, x: f64, y: f64) {
         })
         .unwrap_or(1.0);
 
-    let px = (x * scale).round() as i32;
-    let py = (y * scale).round() as i32;
+    let mut px = (x * scale).round() as i32;
+    let mut py = (y * scale).round() as i32;
+
+    // XWayland 下 scale 常被报成 2，但 X 根窗口已是「逻辑像素」宽（如 2560）；
+    // 若 physical 超出主屏像素范围，改用未乘 scale 的坐标，避免锚到屏外/被 WM 打回 (0,0)。
+    #[cfg(target_os = "linux")]
+    if let Ok(Some(mon)) = window.primary_monitor() {
+        let ms = mon.size();
+        if ms.width > 0 && px >= ms.width as i32 {
+            px = x.round() as i32;
+            py = y.round() as i32;
+            eprintln!(
+                "[meterbar] set_pos scale-adjusted: mon_phys_w={} → using logical-as-x11 ({px},{py})",
+                ms.width
+            );
+        }
+    }
 
     // 1) Physical（X11 / 部分 Wayland 合成器更认）
     if let Err(e) = window.set_position(Position::Physical(PhysicalPosition::new(px, py))) {
         eprintln!("[meterbar] set_position physical err={e}");
     }
+
+    // 1b) Linux：直接 gtk_window.move_（X11 下比 tao set_position 更稳）
+    #[cfg(target_os = "linux")]
+    {
+        use gtk::prelude::GtkWindowExt;
+        if let Ok(gtk_win) = window.gtk_window() {
+            gtk_win.move_(px, py);
+        }
+    }
+
     let outer_phys = window.outer_position();
     eprintln!(
         "[meterbar] set_pos target_logical=({x:.1},{y:.1}) scale={scale:.2} physical=({px},{py}) outer={outer_phys:?}"
@@ -223,6 +247,13 @@ fn set_panel_logical_position(window: &WebviewWindow, x: f64, y: f64) {
     if still_origin {
         if let Err(e) = window.set_position(Position::Logical(LogicalPosition::new(x, y))) {
             eprintln!("[meterbar] set_position logical err={e}");
+        }
+        #[cfg(target_os = "linux")]
+        {
+            use gtk::prelude::GtkWindowExt;
+            if let Ok(gtk_win) = window.gtk_window() {
+                gtk_win.move_(x.round() as i32, y.round() as i32);
+            }
         }
         eprintln!(
             "[meterbar] set_pos logical retry outer={:?}",
@@ -358,6 +389,28 @@ fn cached_tray_rect() -> Option<Rect> {
     })
 }
 
+/// Linux 上 tray.rect / Click.rect 常为空；用事件物理坐标合成约 32×32 的锚点矩形。
+fn synthesize_tray_rect_from_position(position: PhysicalPosition<f64>) -> Option<Rect> {
+    // Wayland 上事件坐标也常为 (0,0)，不可用。
+    if position.x.abs() < 1.5 && position.y.abs() < 1.5 {
+        return None;
+    }
+    const W: f64 = 32.0;
+    const H: f64 = 32.0;
+    let rect = Rect {
+        position: Position::Physical(PhysicalPosition {
+            x: (position.x - W / 2.0).round() as i32,
+            y: (position.y - H / 2.0).round() as i32,
+        }),
+        size: Size::Physical(PhysicalSize {
+            width: W as u32,
+            height: H as u32,
+        }),
+    };
+    remember_tray_rect(&rect);
+    Some(rect)
+}
+
 /// 仅按逻辑 X 命中屏（Y 在 Retina/全屏下不可靠）。
 fn monitor_containing_logical_x(window: &WebviewWindow, x: f64) -> Option<Monitor> {
     let monitors = window.available_monitors().ok()?;
@@ -458,17 +511,26 @@ fn position_panel_fallback(window: &WebviewWindow) {
         (x, oy + MENU_BAR_OFFSET_LOGICAL, "top_right")
     };
 
-    // Linux/GNOME：指示器在顶栏右侧；AppIndicator 无 rect 时固定锚右上。
+    // Linux：AppIndicator 无 tray.rect。优先用指针（X11/XWayland 下点菜单时通常仍在顶栏附近）；
+    // 指针不可用时再锚 GNOME 指示器区（顶栏右侧）。
     #[cfg(not(target_os = "macos"))]
-    let (x, y, via) = {
+    let (x, y, via) = if let Some(c) = cursor.filter(|c| {
+        // 仅采纳落在顶栏带内的指针，避免误用屏幕中部残留坐标。
+        c.y >= oy && c.y <= oy + MENU_BAR_BAND_LOGICAL
+    }) {
+        (
+            clamp_panel_x(c.x - panel.width / 2.0, panel.width, ox, ow),
+            oy + MENU_BAR_OFFSET_LOGICAL,
+            "cursor_top_band",
+        )
+    } else {
         let x = clamp_panel_x(
             ox + ow - panel.width - LINUX_TRAY_RIGHT_MARGIN_LOGICAL,
             panel.width,
             ox,
             ow,
         );
-        let y = oy + MENU_BAR_OFFSET_LOGICAL;
-        (x, y, "top_right")
+        (x, oy + MENU_BAR_OFFSET_LOGICAL, "top_right")
     };
 
     eprintln!(
@@ -1209,26 +1271,49 @@ fn show_panel(app: &tauri::AppHandle, tray_rect: Option<Rect>) {
         // 再钉一次：show 后 outer_size 才可靠，且 WM 已 map 窗口。
         position_panel_near_tray(app, &window, tray_rect);
         mark_panel_shown();
+        #[cfg(target_os = "linux")]
+        {
+            use gtk::prelude::GtkWindowExt;
+            // 先铺透明 shield，再把面板抬到最前，避免 shield 盖住面板。
+            linux_show_dismiss_shield(app);
+            if let Ok(gtk_win) = window.gtk_window() {
+                gtk_win.present();
+                gtk_win.set_keep_above(true);
+            }
+        }
 
         let app2 = app.clone();
         let _ = window.run_on_main_thread(move || {
             std::thread::spawn(move || {
                 std::thread::sleep(std::time::Duration::from_millis(80));
-                if let Some(w) = app2.get_webview_window("main") {
-                    let _ = w.show();
-                    // 优先复用上次逻辑坐标，避免 reanchor 时又去读鼠标。
-                    if let Some((x, y)) = last_panel_logical_pos() {
-                        set_panel_logical_position(&w, x, y);
-                    } else {
-                        position_panel_near_tray(&app2, &w, tray_icon_rect(&app2));
+                let app3 = app2.clone();
+                // GTK/grab 必须回主线程。
+                let _ = app2.run_on_main_thread(move || {
+                    if let Some(w) = app3.get_webview_window("main") {
+                        let _ = w.show();
+                        // 优先复用上次逻辑坐标，避免 reanchor 时又去读鼠标。
+                        if let Some((x, y)) = last_panel_logical_pos() {
+                            set_panel_logical_position(&w, x, y);
+                        } else {
+                            position_panel_near_tray(&app3, &w, tray_icon_rect(&app3));
+                        }
+                        let _ = w.set_focus();
+                        #[cfg(target_os = "linux")]
+                        {
+                            use gtk::prelude::GtkWindowExt;
+                            linux_show_dismiss_shield(&app3);
+                            if let Ok(gtk_win) = w.gtk_window() {
+                                gtk_win.present();
+                                gtk_win.set_keep_above(true);
+                            }
+                        }
+                        eprintln!(
+                            "[meterbar] linux reanchor +80ms visible={:?} outer={:?}",
+                            w.is_visible(),
+                            w.outer_position()
+                        );
                     }
-                    let _ = w.set_focus();
-                    eprintln!(
-                        "[meterbar] linux reanchor +80ms visible={:?} outer={:?}",
-                        w.is_visible(),
-                        w.outer_position()
-                    );
-                }
+                });
             });
         });
 
@@ -1261,23 +1346,16 @@ fn show_panel(app: &tauri::AppHandle, tray_rect: Option<Rect>) {
 }
 
 fn hide_panel_if_blurred(window: &WebviewWindow) {
-    // Wayland/GNOME：Focused(false) 不可靠，且 show 后常立即失焦；
-    // 关闭只靠托盘左键 toggle，避免「闪一下就没了」。
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = window;
-        eprintln!("[meterbar] hide_panel skipped (linux: tray-toggle only, no blur-hide)");
+    // macOS / Linux(X11·XWayland)：失焦隐藏；grace 内忽略 show→focus 抖动。
+    // 纯 Wayland 且未走 X11 时 Focused 仍可能抖动，靠 BLUR_GRACE_MS 兜底。
+    if !should_hide_on_blur() {
+        eprintln!("[meterbar] hide_panel skipped (blur grace / drag)");
         return;
     }
-    #[cfg(target_os = "macos")]
-    {
-        if !should_hide_on_blur() {
-            eprintln!("[meterbar] hide_panel skipped (blur grace / drag)");
-            return;
-        }
-        eprintln!("[meterbar] hide_panel on blur");
-        let _ = window.hide();
-    }
+    eprintln!("[meterbar] hide_panel on blur");
+    let _ = window.hide();
+    #[cfg(target_os = "linux")]
+    linux_hide_dismiss_shield();
 }
 
 fn toggle_panel(app: &tauri::AppHandle, tray_rect: Option<Rect>) {
@@ -1295,6 +1373,8 @@ fn toggle_panel(app: &tauri::AppHandle, tray_rect: Option<Rect>) {
     );
     if effectively_shown {
         let _ = window.hide();
+        #[cfg(target_os = "linux")]
+        linux_hide_dismiss_shield();
     } else {
         show_panel(app, tray_rect);
     }
@@ -1314,6 +1394,150 @@ fn apply_accessory_activation_policy_early() {
     let app = NSApplication::sharedApplication(mtm);
     let ok = app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
     eprintln!("[meterbar] early NSApplicationActivationPolicyAccessory ok={ok}");
+}
+
+/// Linux：无边框 always-on-top 面板常拿不到焦点，点桌面不会触发 Focused(false)。
+/// 用全屏 Popup 接外部点击，但必须以 RGBA + draw(alpha=0) 真正透明；
+/// 禁止用 `set_opacity(0.02)`——合成器上会变成可见全屏灰罩。
+#[cfg(target_os = "linux")]
+mod linux_dismiss {
+    use std::cell::RefCell;
+    thread_local! {
+        pub static SHIELD: RefCell<Option<gtk::Window>> = const { RefCell::new(None) };
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_hide_dismiss_shield() {
+    use gtk::prelude::WidgetExt;
+    linux_dismiss::SHIELD.with(|cell| {
+        if let Some(shield) = cell.borrow().as_ref() {
+            shield.hide();
+        }
+    });
+}
+
+#[cfg(target_os = "linux")]
+fn linux_show_dismiss_shield(app: &tauri::AppHandle) {
+    use cairo::{Operator, RectangleInt, Region};
+    use gtk::gdk::{self, prelude::MonitorExt};
+    use gtk::glib;
+    use gtk::prelude::*;
+
+    linux_dismiss::SHIELD.with(|cell| {
+        if cell.borrow().is_none() {
+            let shield = gtk::Window::new(gtk::WindowType::Popup);
+            shield.set_decorated(false);
+            shield.set_accept_focus(false);
+            shield.set_can_focus(false);
+            shield.set_keep_above(true);
+            shield.set_app_paintable(true);
+            shield.add_events(gdk::EventMask::BUTTON_PRESS_MASK);
+            if let Some(screen) = WidgetExt::screen(&shield) {
+                if let Some(visual) = screen.rgba_visual() {
+                    shield.set_visual(Some(&visual));
+                }
+            }
+            // 像素全透明；勿用 Window::set_opacity（会整窗变灰）。
+            shield.connect_draw(|_w, cr| {
+                cr.set_operator(Operator::Source);
+                cr.set_source_rgba(0.0, 0.0, 0.0, 0.0);
+                let _ = cr.paint();
+                glib::Propagation::Proceed
+            });
+            let app_c = app.clone();
+            shield.connect_button_press_event(move |s, _event| {
+                if !should_hide_on_blur() {
+                    eprintln!("[meterbar] linux shield click ignored (grace/drag)");
+                    return glib::Propagation::Stop;
+                }
+                eprintln!("[meterbar] linux outside-click → hide panel");
+                if let Some(w) = app_c.get_webview_window("main") {
+                    let _ = w.hide();
+                }
+                s.hide();
+                glib::Propagation::Stop
+            });
+            *cell.borrow_mut() = Some(shield);
+        }
+        let borrow = cell.borrow();
+        let Some(shield) = borrow.as_ref() else {
+            return;
+        };
+        if let Some(display) = gdk::Display::default() {
+            if let Some(monitor) = display.primary_monitor() {
+                let geo = monitor.geometry();
+                shield.move_(geo.x(), geo.y());
+                shield.resize(geo.width(), geo.height());
+            }
+        }
+        shield.show_all();
+        // 确保输入区域覆盖全屏（透明窗在部分合成器上默认不收点击）。
+        if let Some(gw) = shield.window() {
+            let (w, h) = (gw.width(), gw.height());
+            if w > 0 && h > 0 {
+                let region = Region::create_rectangle(&RectangleInt::new(0, 0, w, h));
+                gw.input_shape_combine_region(&region, 0, 0);
+            }
+        }
+        eprintln!("[meterbar] linux transparent dismiss shield shown");
+    });
+}
+
+/// Wayland 禁止普通窗口绝对定位（set_position 成功但 outer 仍为 0,0）。
+///
+/// 注意：从 IDE/服务拉起时经常 **没有** `WAYLAND_DISPLAY` / `XDG_SESSION_TYPE=wayland`
+///（常见为 `tty`），但 GTK 仍会自动连上 `/run/user/$UID/wayland-0`。因此不能靠
+/// 环境变量探测 Wayland，只要用户未显式指定 `GDK_BACKEND`，Linux 一律走 X11（XWayland）。
+#[cfg(target_os = "linux")]
+fn prefer_x11_backend_for_panel_positioning() {
+    // SAFETY: 仅在 GTK/Tauri 初始化前、单线程启动路径调用。
+    unsafe {
+        if std::env::var_os("GDK_BACKEND").is_none() {
+            std::env::set_var("GDK_BACKEND", "x11");
+        }
+        if std::env::var_os("DISPLAY").is_none() {
+            // 优先 :0（本机 mutter XWayland 实测可用）
+            let candidates = [":0", ":1"];
+            for d in candidates {
+                let sock = format!("/tmp/.X11-unix/X{}", d.trim_start_matches(':'));
+                if std::path::Path::new(&sock).exists() {
+                    std::env::set_var("DISPLAY", d);
+                    break;
+                }
+            }
+            if std::env::var_os("DISPLAY").is_none() {
+                std::env::set_var("DISPLAY", ":0");
+            }
+        }
+        if std::env::var_os("XAUTHORITY").is_none() {
+            if let Ok(runtime) = std::env::var("XDG_RUNTIME_DIR") {
+                if let Ok(rd) = std::fs::read_dir(&runtime) {
+                    let mut auths: Vec<std::path::PathBuf> = rd
+                        .flatten()
+                        .map(|e| e.path())
+                        .filter(|p| {
+                            p.file_name()
+                                .and_then(|n| n.to_str())
+                                .is_some_and(|n| n.starts_with(".mutter-Xwaylandauth."))
+                        })
+                        .collect();
+                    auths.sort();
+                    if let Some(path) = auths.pop() {
+                        std::env::set_var("XAUTHORITY", path);
+                    }
+                }
+            }
+        }
+    }
+    eprintln!(
+        "[meterbar] linux display bootstrap GDK_BACKEND={:?} DISPLAY={:?} XAUTHORITY={:?} WAYLAND_DISPLAY={:?} XDG_SESSION_TYPE={:?}",
+        std::env::var_os("GDK_BACKEND"),
+        std::env::var_os("DISPLAY"),
+        std::env::var_os("XAUTHORITY"),
+        std::env::var_os("WAYLAND_DISPLAY"),
+        std::env::var_os("XDG_SESSION_TYPE"),
+    );
 }
 
 /// 清理旧版 LaunchAgent（指向 Contents/MacOS 裸二进制），避免登录项显示 exec/usages。
@@ -1349,6 +1573,8 @@ fn remove_legacy_autostart_launch_agents() -> bool {
 pub fn run() {
     #[cfg(target_os = "macos")]
     apply_accessory_activation_policy_early();
+    #[cfg(target_os = "linux")]
+    prefer_x11_backend_for_panel_positioning();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -1417,23 +1643,37 @@ pub fn run() {
                             button: MouseButton::Left,
                             button_state: MouseButtonState::Up,
                             rect,
+                            position,
                             ..
                         } => {
-                            remember_tray_rect(&rect);
-                            toggle_panel(tray.app_handle(), Some(rect));
+                            // Linux AppIndicator 通常不发 Click；若发了且 rect 无效，用点击坐标合成锚点。
+                            let anchor = if tray_rect_is_valid(&rect, 1.0) {
+                                remember_tray_rect(&rect);
+                                Some(rect)
+                            } else {
+                                synthesize_tray_rect_from_position(position)
+                            };
+                            toggle_panel(tray.app_handle(), anchor);
                         }
                         TrayIconEvent::Click {
                             button: MouseButton::Right,
                             button_state: MouseButtonState::Up,
                             rect,
+                            position,
                             ..
                         } => {
                             // 右键出菜单前也缓存几何，便于菜单「Open」锚点。
-                            remember_tray_rect(&rect);
+                            if tray_rect_is_valid(&rect, 1.0) {
+                                remember_tray_rect(&rect);
+                            } else if let Some(r) = synthesize_tray_rect_from_position(position) {
+                                remember_tray_rect(&r);
+                            }
                         }
                         TrayIconEvent::Enter { rect, .. }
                         | TrayIconEvent::Move { rect, .. } => {
-                            remember_tray_rect(&rect);
+                            if tray_rect_is_valid(&rect, 1.0) {
+                                remember_tray_rect(&rect);
+                            }
                         }
                         _ => {}
                     }
@@ -1471,6 +1711,16 @@ pub fn run() {
                     }
                     let _ = window.set_skip_taskbar(false);
                     let _ = window.set_always_on_top(true);
+                    let _ = window.set_focusable(true);
+                    // 无边框窗在部分 DE 上默认不接焦点 → 点空白永不触发 Focused(false)。
+                    #[cfg(target_os = "linux")]
+                    {
+                        use gtk::prelude::{GtkWindowExt, WidgetExt};
+                        if let Ok(gtk_win) = window.gtk_window() {
+                            gtk_win.set_accept_focus(true);
+                            gtk_win.set_can_focus(true);
+                        }
+                    }
                     // 不在启动时强制 show：tray.rect/monitor 常未就绪，且会触发 blur 竞态。
                     // 用户左键托盘后再弹出（此时定位与显示更稳）。
                     eprintln!(

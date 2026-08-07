@@ -31,6 +31,12 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 libc = "0.2"
 tauri-plugin-autostart = "2"
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# 与 Tauri/wry 对齐的 GTK3：用于 X11 下 gtk_window.move_ / accept_focus（Wayland 绝对定位不可用）。
+gtk = "0.18"
+# 与 gtk 0.18 对齐：dismiss shield 用 RGBA 全透明绘制（避免 opacity 灰罩）。
+cairo-rs = "0.18"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 # 注意：不能 object_setClass / contentView 迁到 NSPanel（前者 abort，后者 Tao panic）。
 # 全屏置顶：早设 Accessory + CanJoinAllApplications + ScreenSaver level（见 lib.rs）。

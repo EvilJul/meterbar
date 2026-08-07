@@ -2143,7 +2143,9 @@ dependencies = [
 name = "meterbar"
 version = "0.1.0"
 dependencies = [
+ "cairo-rs",
  "chrono",
+ "gtk",
  "keyring",
  "libc",
  "objc2",
